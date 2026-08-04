@@ -1,0 +1,16 @@
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+*.rar
+.git
+.gitignore
+.idea
+*.iml
+*.log
+uploads/
+.env
+application-local.properties
