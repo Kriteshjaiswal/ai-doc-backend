@@ -3,6 +3,7 @@ package com.aidocqa.controller;
 import com.aidocqa.dto.ApiResponseDto;
 import com.aidocqa.dto.ChatRequestDto;
 import com.aidocqa.dto.ChatResponseDto;
+import com.aidocqa.entity.User;
 import com.aidocqa.service.ChatService;
 import com.aidocqa.service.ResourceNotFoundException;
 import io.swagger.v3.oas.annotations.Operation;
@@ -10,6 +11,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -25,9 +27,10 @@ public class ChatController {
     @PostMapping("/ask")
     @Operation(summary = "Ask a question", description = "Ask an AI-powered question about a specific document")
     public ResponseEntity<ApiResponseDto<ChatResponseDto>> askQuestion(
-            @Valid @RequestBody ChatRequestDto request) {
+            @Valid @RequestBody ChatRequestDto request,
+            @AuthenticationPrincipal User user) {
 
-        ChatResponseDto response = chatService.askQuestion(request);
+        ChatResponseDto response = chatService.askQuestion(request, user);
         return ResponseEntity
                 .ok(ApiResponseDto.success("Question answered successfully", response));
     }
@@ -35,9 +38,10 @@ public class ChatController {
     @GetMapping("/history/{documentId}")
     @Operation(summary = "Get chat history", description = "Retrieve the chat history for a specific document")
     public ResponseEntity<ApiResponseDto<List<ChatResponseDto>>> getChatHistory(
-            @PathVariable Long documentId) {
+            @PathVariable Long documentId,
+            @AuthenticationPrincipal User user) {
 
-        List<ChatResponseDto> history = chatService.getChatHistory(documentId);
+        List<ChatResponseDto> history = chatService.getChatHistory(documentId, user);
         return ResponseEntity
                 .ok(ApiResponseDto.success("Chat history retrieved successfully", history));
     }
@@ -45,9 +49,10 @@ public class ChatController {
     @DeleteMapping("/{chatId}")
     @Operation(summary = "Delete chat by ID")
     public ResponseEntity<ApiResponseDto<Void>> deleteChat(
-            @PathVariable Long chatId) throws ResourceNotFoundException {
+            @PathVariable Long chatId,
+            @AuthenticationPrincipal User user) throws ResourceNotFoundException {
 
-        chatService.deleteChat(chatId);
+        chatService.deleteChat(chatId, user);
 
         return ResponseEntity.ok(
                 ApiResponseDto.success("Chat deleted successfully", null)
@@ -57,9 +62,10 @@ public class ChatController {
     @DeleteMapping("/document/{documentId}")
     @Operation(summary = "Delete all chats for a document")
     public ResponseEntity<ApiResponseDto<Void>> deleteChatsByDocument(
-            @PathVariable Long documentId) {
+            @PathVariable Long documentId,
+            @AuthenticationPrincipal User user) {
 
-        chatService.deleteChatsByDocument(documentId);
+        chatService.deleteChatsByDocument(documentId, user);
 
         return ResponseEntity.ok(
                 ApiResponseDto.success("All chats deleted successfully", null)

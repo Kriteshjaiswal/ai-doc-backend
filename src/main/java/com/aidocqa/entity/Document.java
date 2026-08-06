@@ -31,6 +31,14 @@ public class Document {
     @Column(name = "extracted_text", columnDefinition = "LONGTEXT")
     private String extractedText;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    private User user;
+
+    @OneToMany(mappedBy = "document", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    private java.util.List<ChatHistory> chatHistories = new java.util.ArrayList<>();
+
     @Column(name = "uploaded_at", nullable = false)
     private LocalDateTime uploadedAt;
 
