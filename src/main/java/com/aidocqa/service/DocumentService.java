@@ -7,6 +7,7 @@ import com.aidocqa.exception.DocumentNotFoundException;
 import com.aidocqa.exception.InvalidFileException;
 import com.aidocqa.repository.ChatHistoryRepository;
 import com.aidocqa.repository.DocumentRepository;
+import com.aidocqa.repository.FlashcardRepository;
 import com.aidocqa.utility.FileUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,6 +30,7 @@ public class DocumentService {
 
     private final DocumentRepository documentRepository;
     private final ChatHistoryRepository chatHistoryRepository;
+    private final FlashcardRepository flashcardRepository;
     private final PdfExtractorService pdfExtractorService;
     private final GeminiApiService geminiApiService;
 
@@ -114,6 +116,10 @@ public class DocumentService {
         // Delete associated chat history records first to satisfy foreign key constraints
         chatHistoryRepository.deleteByDocumentId(document.getId());
         log.info("Deleted chat history for document ID: {}", id);
+
+        // Delete associated flashcards
+        flashcardRepository.deleteByDocumentId(document.getId());
+        log.info("Deleted flashcards for document ID: {}", id);
 
         // Delete the file from disk
         try {
