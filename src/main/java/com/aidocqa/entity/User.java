@@ -34,6 +34,12 @@ public class User implements UserDetails {
     @Builder.Default
     private String role = "USER";
 
+    @Column(nullable = false)
+    @Builder.Default
+    private String provider = "LOCAL";
+
+    private String providerId;
+
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         return List.of(new SimpleGrantedAuthority("ROLE_" + role));

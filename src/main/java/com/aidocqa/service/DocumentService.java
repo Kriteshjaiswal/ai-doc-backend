@@ -58,28 +58,23 @@ public class DocumentService {
 
             log.info("File saved to: {}", filePath.toAbsolutePath());
 
-            // Extract text from the PDF
-            String rawText = pdfExtractorService.extractText(filePath.toFile());
+            // Extract structured whole-document context (Title, TOC, middle chapters, conclusion) from PDF
+            String rawText = pdfExtractorService.extractStructuredDocContext(filePath.toFile());
+            if (rawText == null || rawText.isBlank()) {
+                rawText = pdfExtractorService.extractText(filePath.toFile());
+            }
 
-            // One-time AI summary generation upon document upload
-            String aiSummary = geminiApiService.generateAnswer(
-                    rawText,
-                    "Summarize this document in 3 to 4 concise sentences/lines focusing on key points."
-            );
-
-            log.info("One-time AI summary generated for document: {}", file.getOriginalFilename());
-
-            // Build and save the document entity storing the AI summary in extracted_text column
+            // Build and save the document entity storing the actual raw extracted text from the PDF
             Document document = Document.builder()
                     .fileName(file.getOriginalFilename())
                     .fileSize(file.getSize())
                     .filePath(filePath.toString())
-                    .extractedText(aiSummary)
+                    .extractedText(rawText)
                     .user(user)
                     .build();
 
             Document savedDocument = documentRepository.save(document);
-            log.info("Document saved with ID: {} for user: {}", savedDocument.getId(), user.getEmail());
+            log.info("Document saved with ID: {} for user: {} with {} chars of extracted text", savedDocument.getId(), user.getEmail(), rawText.length());
 
             return mapToDto(savedDocument);
 

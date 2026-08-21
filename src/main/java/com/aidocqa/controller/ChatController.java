@@ -35,10 +35,10 @@ public class ChatController {
                 .ok(ApiResponseDto.success("Question answered successfully", response));
     }
 
-    @GetMapping("/history/{documentId}")
-    @Operation(summary = "Get chat history", description = "Retrieve the chat history for a specific document")
+    @GetMapping({"/history", "/history/{documentId}"})
+    @Operation(summary = "Get chat history", description = "Retrieve the chat history for a specific document or all documents")
     public ResponseEntity<ApiResponseDto<List<ChatResponseDto>>> getChatHistory(
-            @PathVariable Long documentId,
+            @PathVariable(required = false) Long documentId,
             @AuthenticationPrincipal User user) {
 
         List<ChatResponseDto> history = chatService.getChatHistory(documentId, user);

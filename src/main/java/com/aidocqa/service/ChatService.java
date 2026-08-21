@@ -2,10 +2,10 @@ package com.aidocqa.service;
 
 import com.aidocqa.dto.ChatRequestDto;
 import com.aidocqa.dto.ChatResponseDto;
+import com.aidocqa.dto.GeminiResponseDto;
 import com.aidocqa.entity.ChatHistory;
 import com.aidocqa.entity.Document;
 import com.aidocqa.entity.User;
-import com.aidocqa.exception.DocumentNotFoundException;
 import com.aidocqa.repository.ChatHistoryRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -27,62 +28,79 @@ public class ChatService {
     private final PdfExtractorService pdfExtractorService;
 
     /**
-     * Processes a user question against a document and returns the AI-generated answer.
-     * Extracts full PDF content from disk for rich context answering.
+     * Processes a user question against an optional document or general knowledge, returning the AI answer.
+     * Persists to chat history ONLY if the AI response execution was successful.
      *
      * @param request the chat request containing documentId and question
      * @param user    the authenticated user
      * @return the chat response DTO with the answer
      */
     public ChatResponseDto askQuestion(ChatRequestDto request, User user) {
-        // Fetch the document (scoped to user)
-        Document document = documentService.getDocumentById(request.getDocumentId(), user);
+        Document document = null;
+        String contextText = "";
 
-        String contextText = null;
+        List<String> pageImagesBase64 = null;
 
-        // Try extracting full text from the saved PDF file for rich context
-        try {
-            if (document.getFilePath() != null) {
-                File pdfFile = new File(document.getFilePath());
-                if (pdfFile.exists()) {
-                    contextText = pdfExtractorService.extractText(pdfFile);
+        if (request.getDocumentId() != null) {
+            try {
+                document = documentService.getDocumentById(request.getDocumentId(), user);
+                if (document != null) {
+                    contextText = document.getExtractedText();
                 }
+                if (document != null && document.getFilePath() != null) {
+                    File pdfFile = new File(document.getFilePath());
+                    if (pdfFile.exists()) {
+                        if (contextText == null || contextText.isBlank()) {
+                            contextText = pdfExtractorService.extractStructuredDocContext(pdfFile);
+                        }
+                        // If extracted text is short or sparse (< 100 chars), render page images for vision/OCR analysis
+                        if (contextText == null || contextText.trim().length() < 100) {
+                            pageImagesBase64 = pdfExtractorService.renderPdfPagesAsBase64(pdfFile, 5);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("Could not retrieve text context for document ID {}: {}", request.getDocumentId(), e.getMessage());
             }
-        } catch (Exception e) {
-            log.warn("Could not re-extract text from file path {}, using stored text/summary: {}", document.getFilePath(), e.getMessage());
         }
 
-        // Fallback to stored text/summary if file re-extraction fails or returns empty
-        if (contextText == null || contextText.isBlank()) {
-            contextText = document.getExtractedText();
+        log.info("Processing question: '{}' (documentId: {}) by user: {}", request.getQuestion(), request.getDocumentId(), user.getEmail());
+
+        // Call Gemini AI Multimodal API with extracted text and rendered page images
+        GeminiResponseDto aiResult = geminiApiService.generateAnswerMultimodal(contextText, pageImagesBase64, request.getQuestion());
+
+        log.info("Grounding validation: provider={}, model={}, success={}, grounded={}",
+                aiResult.getProvider(), aiResult.getModel(), aiResult.isSuccess(), aiResult.isGrounded());
+
+        // Save chat history ONLY when success == true and answer is non-empty
+        if (aiResult.isSuccess() && aiResult.getAnswer() != null && !aiResult.getAnswer().isBlank()) {
+            ChatHistory chatHistory = ChatHistory.builder()
+                    .document(document)
+                    .user(user)
+                    .question(request.getQuestion())
+                    .answer(aiResult.getAnswer())
+                    .build();
+
+            ChatHistory savedChat = chatHistoryRepository.save(chatHistory);
+            log.info("Saving chat history... Success with ID: {}", savedChat.getId());
+
+            return ChatResponseDto.builder()
+                    .id(savedChat.getId())
+                    .documentId(document != null ? document.getId() : null)
+                    .question(savedChat.getQuestion())
+                    .answer(savedChat.getAnswer())
+                    .askedAt(savedChat.getAskedAt())
+                    .build();
+        } else {
+            log.warn("Chat history NOT saved because AI response indicated failure (reason: {})", aiResult.getFailureReason());
+            return ChatResponseDto.builder()
+                    .id(null)
+                    .documentId(document != null ? document.getId() : null)
+                    .question(request.getQuestion())
+                    .answer(aiResult.getAnswer())
+                    .askedAt(LocalDateTime.now())
+                    .build();
         }
-
-        if (contextText == null || contextText.isBlank()) {
-            throw new DocumentNotFoundException(
-                    "No text content found for document ID: " + request.getDocumentId()
-            );
-        }
-
-        log.info("Processing question for document ID: {} by user: {}", request.getDocumentId(), user.getEmail());
-
-        // Call Gemini API
-        String answer = geminiApiService.generateAnswer(
-                contextText,
-                request.getQuestion()
-        );
-
-        // Save chat history
-        ChatHistory chatHistory = ChatHistory.builder()
-                .document(document)
-                .user(user)
-                .question(request.getQuestion())
-                .answer(answer)
-                .build();
-
-        ChatHistory savedChat = chatHistoryRepository.save(chatHistory);
-        log.info("Chat history saved with ID: {}", savedChat.getId());
-
-        return mapToDto(savedChat);
     }
 
     /**
@@ -93,10 +111,17 @@ public class ChatService {
      * @return list of chat response DTOs
      */
     public List<ChatResponseDto> getChatHistory(Long documentId, User user) {
-        // Verify the document exists and belongs to user
-        documentService.getDocumentById(documentId, user);
+        if (documentId != null) {
+            documentService.getDocumentById(documentId, user);
+            return chatHistoryRepository.findByUserIdAndDocumentIdOrderByAskedAtDesc(user.getId(), documentId).stream()
+                    .map(this::mapToDto)
+                    .collect(Collectors.toList());
+        }
+        return getAllUserChatHistory(user);
+    }
 
-        return chatHistoryRepository.findByUserIdAndDocumentIdOrderByAskedAtDesc(user.getId(), documentId).stream()
+    public List<ChatResponseDto> getAllUserChatHistory(User user) {
+        return chatHistoryRepository.findByUserIdOrderByAskedAtDesc(user.getId()).stream()
                 .map(this::mapToDto)
                 .collect(Collectors.toList());
     }
@@ -106,7 +131,6 @@ public class ChatService {
         ChatHistory chat = chatHistoryRepository.findById(chatId)
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
 
-        // Verify ownership
         if (!chat.getUser().getId().equals(user.getId())) {
             throw new ResourceNotFoundException("Chat not found");
         }
@@ -116,16 +140,14 @@ public class ChatService {
 
     @Transactional
     public void deleteChatsByDocument(Long documentId, User user) {
-        // Verify document ownership
         documentService.getDocumentById(documentId, user);
-
         chatHistoryRepository.deleteByUserIdAndDocumentId(user.getId(), documentId);
     }
 
     private ChatResponseDto mapToDto(ChatHistory chatHistory) {
         return ChatResponseDto.builder()
                 .id(chatHistory.getId())
-                .documentId(chatHistory.getDocument().getId())
+                .documentId(chatHistory.getDocument() != null ? chatHistory.getDocument().getId() : null)
                 .question(chatHistory.getQuestion())
                 .answer(chatHistory.getAnswer())
                 .askedAt(chatHistory.getAskedAt())

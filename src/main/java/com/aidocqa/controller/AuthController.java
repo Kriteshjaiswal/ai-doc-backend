@@ -3,6 +3,8 @@ package com.aidocqa.controller;
 import com.aidocqa.dto.ApiResponseDto;
 import com.aidocqa.dto.AuthenticationResponseDto;
 import com.aidocqa.dto.LoginRequestDto;
+import com.aidocqa.dto.OAuthConfigDto;
+import com.aidocqa.dto.OAuthLoginRequestDto;
 import com.aidocqa.dto.RegisterRequestDto;
 import com.aidocqa.service.AuthService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -40,5 +42,25 @@ public class AuthController {
         AuthenticationResponseDto response = authService.login(request);
         return ResponseEntity
                 .ok(ApiResponseDto.success("Login successful", response));
+    }
+
+    @PostMapping("/oauth/{provider}")
+    @Operation(summary = "OAuth Login", description = "Authenticate using Google or GitHub OAuth authorization code")
+    public ResponseEntity<ApiResponseDto<AuthenticationResponseDto>> oauthLogin(
+            @PathVariable String provider,
+            @RequestBody OAuthLoginRequestDto request) {
+
+        AuthenticationResponseDto response = authService.oauthLogin(provider, request);
+        return ResponseEntity
+                .ok(ApiResponseDto.success("OAuth login successful", response));
+    }
+
+    @GetMapping("/oauth/config")
+    @Operation(summary = "Get OAuth Configuration", description = "Check if Google and GitHub OAuth credentials are configured")
+    public ResponseEntity<ApiResponseDto<OAuthConfigDto>> getOAuthConfig() {
+
+        OAuthConfigDto response = authService.getOAuthConfig();
+        return ResponseEntity
+                .ok(ApiResponseDto.success("OAuth configuration retrieved", response));
     }
 }

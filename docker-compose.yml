@@ -39,8 +39,6 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-aidocqa}
       MYSQL_USER: ${MYSQL_USER:-avnadmin}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-AVNS_wCnf8i72hXVEAt6iEzw}
-      GROQ_API_KEY: ${GROQ_API_KEY:-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}
-      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-AQ.Ab8RN6J1i0GWyunWhkeqqAGl2YpID-SCa3iSU8hQU1eCH_PMTg}
     ports:
       - "8080:8080"

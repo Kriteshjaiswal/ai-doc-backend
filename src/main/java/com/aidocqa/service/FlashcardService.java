@@ -119,7 +119,8 @@ public class FlashcardService {
                 """.formatted(count);
 
         try {
-            String rawResponse = geminiApiService.generateAnswer(text, prompt);
+            com.aidocqa.dto.GeminiResponseDto aiDto = geminiApiService.generateAnswer(text, prompt);
+            String rawResponse = aiDto != null ? aiDto.getAnswer() : null;
             String jsonArrayStr = extractJsonArrayString(rawResponse);
 
             if (jsonArrayStr != null && !jsonArrayStr.isBlank()) {
