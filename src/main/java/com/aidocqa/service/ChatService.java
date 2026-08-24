@@ -6,6 +6,7 @@ import com.aidocqa.dto.GeminiResponseDto;
 import com.aidocqa.entity.ChatHistory;
 import com.aidocqa.entity.Document;
 import com.aidocqa.entity.User;
+import com.aidocqa.exception.ResourceNotFoundException;
 import com.aidocqa.repository.ChatHistoryRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -28,7 +29,8 @@ public class ChatService {
     private final PdfExtractorService pdfExtractorService;
 
     /**
-     * Processes a user question against an optional document or general knowledge, returning the AI answer.
+     * Processes a user question against an optional document or general knowledge,
+     * returning the AI answer.
      * Persists to chat history ONLY if the AI response execution was successful.
      *
      * @param request the chat request containing documentId and question
@@ -53,21 +55,25 @@ public class ChatService {
                         if (contextText == null || contextText.isBlank()) {
                             contextText = pdfExtractorService.extractStructuredDocContext(pdfFile);
                         }
-                        // If extracted text is short or sparse (< 100 chars), render page images for vision/OCR analysis
+                        // If extracted text is short or sparse (< 100 chars), render page images for
+                        // vision/OCR analysis
                         if (contextText == null || contextText.trim().length() < 100) {
                             pageImagesBase64 = pdfExtractorService.renderPdfPagesAsBase64(pdfFile, 5);
                         }
                     }
                 }
             } catch (Exception e) {
-                log.warn("Could not retrieve text context for document ID {}: {}", request.getDocumentId(), e.getMessage());
+                log.warn("Could not retrieve text context for document ID {}: {}", request.getDocumentId(),
+                        e.getMessage());
             }
         }
 
-        log.info("Processing question: '{}' (documentId: {}) by user: {}", request.getQuestion(), request.getDocumentId(), user.getEmail());
+        log.info("Processing question: '{}' (documentId: {}) by user: {}", request.getQuestion(),
+                request.getDocumentId(), user.getEmail());
 
         // Call Gemini AI Multimodal API with extracted text and rendered page images
-        GeminiResponseDto aiResult = geminiApiService.generateAnswerMultimodal(contextText, pageImagesBase64, request.getQuestion());
+        GeminiResponseDto aiResult = geminiApiService.generateAnswerMultimodal(contextText, pageImagesBase64,
+                request.getQuestion());
 
         log.info("Grounding validation: provider={}, model={}, success={}, grounded={}",
                 aiResult.getProvider(), aiResult.getModel(), aiResult.isSuccess(), aiResult.isGrounded());
@@ -92,7 +98,8 @@ public class ChatService {
                     .askedAt(savedChat.getAskedAt())
                     .build();
         } else {
-            log.warn("Chat history NOT saved because AI response indicated failure (reason: {})", aiResult.getFailureReason());
+            log.warn("Chat history NOT saved because AI response indicated failure (reason: {})",
+                    aiResult.getFailureReason());
             return ChatResponseDto.builder()
                     .id(null)
                     .documentId(document != null ? document.getId() : null)
@@ -104,7 +111,8 @@ public class ChatService {
     }
 
     /**
-     * Retrieves the chat history for a specific document, scoped to the authenticated user.
+     * Retrieves the chat history for a specific document, scoped to the
+     * authenticated user.
      *
      * @param documentId the document ID
      * @param user       the authenticated user

@@ -4,10 +4,20 @@ import com.aidocqa.dto.ApiResponseDto;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.stream.Collectors;
 
@@ -15,54 +25,145 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    @ExceptionHandler(DocumentNotFoundException.class)
-    public ResponseEntity<ApiResponseDto<Void>> handleDocumentNotFound(DocumentNotFoundException ex) {
-        log.warn("Document not found: {}", ex.getMessage());
-        return ResponseEntity
-                .status(HttpStatus.NOT_FOUND)
-                .body(ApiResponseDto.error(ex.getMessage()));
-    }
+        @ExceptionHandler(DocumentNotFoundException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleDocumentNotFound(DocumentNotFoundException ex) {
+                log.warn("Document not found: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.NOT_FOUND)
+                                .body(ApiResponseDto.error(ex.getMessage()));
+        }
 
-    @ExceptionHandler(InvalidFileException.class)
-    public ResponseEntity<ApiResponseDto<Void>> handleInvalidFile(InvalidFileException ex) {
-        log.warn("Invalid file: {}", ex.getMessage());
-        return ResponseEntity
-                .status(HttpStatus.BAD_REQUEST)
-                .body(ApiResponseDto.error(ex.getMessage()));
-    }
+        @ExceptionHandler(ResourceNotFoundException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleResourceNotFound(ResourceNotFoundException ex) {
+                log.warn("Resource not found: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.NOT_FOUND)
+                                .body(ApiResponseDto.error(ex.getMessage()));
+        }
 
-    @ExceptionHandler(GeminiApiException.class)
-    public ResponseEntity<ApiResponseDto<Void>> handleGeminiApiError(GeminiApiException ex) {
-        log.error("Gemini API error: {}", ex.getMessage(), ex);
-        return ResponseEntity
-                .status(HttpStatus.SERVICE_UNAVAILABLE)
-                .body(ApiResponseDto.error("AI service is currently unavailable. Please try again later."));
-    }
+        @ExceptionHandler(NoResourceFoundException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleNoResourceFound(NoResourceFoundException ex) {
+                log.warn("Resource not found: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.NOT_FOUND)
+                                .body(ApiResponseDto.error("Resource not found: /" + ex.getResourcePath()));
+        }
 
-    @ExceptionHandler(MaxUploadSizeExceededException.class)
-    public ResponseEntity<ApiResponseDto<Void>> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
-        log.warn("File size exceeded: {}", ex.getMessage());
-        return ResponseEntity
-                .status(HttpStatus.PAYLOAD_TOO_LARGE)
-                .body(ApiResponseDto.error("File size exceeds the maximum allowed limit of 50MB."));
-    }
+        @ExceptionHandler(InvalidFileException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleInvalidFile(InvalidFileException ex) {
+                log.warn("Invalid file: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.BAD_REQUEST)
+                                .body(ApiResponseDto.error(ex.getMessage()));
+        }
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ApiResponseDto<Void>> handleValidation(MethodArgumentNotValidException ex) {
-        String errors = ex.getBindingResult().getFieldErrors().stream()
-                .map(error -> error.getField() + ": " + error.getDefaultMessage())
-                .collect(Collectors.joining(", "));
-        log.warn("Validation failed: {}", errors);
-        return ResponseEntity
-                .status(HttpStatus.BAD_REQUEST)
-                .body(ApiResponseDto.error(errors));
-    }
+        @ExceptionHandler(GeminiApiException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleGeminiApiError(GeminiApiException ex) {
+                log.error("Gemini API error: {}", ex.getMessage(), ex);
+                return ResponseEntity
+                                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                                .body(ApiResponseDto
+                                                .error("AI service is currently unavailable. Please try again later."));
+        }
 
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<ApiResponseDto<Void>> handleGenericException(Exception ex) {
-        log.error("Unexpected error occurred: {}", ex.getMessage(), ex);
-        return ResponseEntity
-                .status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(ApiResponseDto.error("An unexpected error occurred. Please try again later."));
-    }
+        @ExceptionHandler(MaxUploadSizeExceededException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
+                log.warn("File size exceeded: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.PAYLOAD_TOO_LARGE)
+                                .body(ApiResponseDto.error("File size exceeds the maximum allowed limit of 50MB."));
+        }
+
+        @ExceptionHandler(MethodArgumentNotValidException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleValidation(MethodArgumentNotValidException ex) {
+                String errors = ex.getBindingResult().getFieldErrors().stream()
+                                .map(error -> error.getField() + ": " + error.getDefaultMessage())
+                                .collect(Collectors.joining(", "));
+                log.warn("Validation failed: {}", errors);
+                return ResponseEntity
+                                .status(HttpStatus.BAD_REQUEST)
+                                .body(ApiResponseDto.error(errors));
+        }
+
+        @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleMethodNotSupported(HttpRequestMethodNotSupportedException ex) {
+                log.warn("HTTP method not supported: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.METHOD_NOT_ALLOWED)
+                                .body(ApiResponseDto.error(ex.getMessage()));
+        }
+
+        @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleMediaTypeNotSupported(HttpMediaTypeNotSupportedException ex) {
+                log.warn("HTTP media type not supported: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+                                .body(ApiResponseDto.error(ex.getMessage()));
+        }
+
+        @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleMediaTypeNotAcceptable(HttpMediaTypeNotAcceptableException ex) {
+                log.warn("HTTP media type not acceptable: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.NOT_ACCEPTABLE)
+                                .body(ApiResponseDto.error(ex.getMessage()));
+        }
+
+        @ExceptionHandler(MissingServletRequestParameterException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleMissingParams(MissingServletRequestParameterException ex) {
+                log.warn("Missing request parameter: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.BAD_REQUEST)
+                                .body(ApiResponseDto.error("Missing required parameter: " + ex.getParameterName()));
+        }
+
+        @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+                log.warn("Method argument type mismatch: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.BAD_REQUEST)
+                                .body(ApiResponseDto.error(String.format("Parameter '%s' must be of type %s",
+                                                ex.getName(),
+                                                ex.getRequiredType() != null ? ex.getRequiredType().getSimpleName() : "valid type")));
+        }
+
+        @ExceptionHandler(HttpMessageNotReadableException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleMessageNotReadable(HttpMessageNotReadableException ex) {
+                log.warn("Malformed JSON request: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.BAD_REQUEST)
+                                .body(ApiResponseDto.error("Malformed request payload."));
+        }
+
+        @ExceptionHandler({BadCredentialsException.class, UsernameNotFoundException.class})
+        public ResponseEntity<ApiResponseDto<Void>> handleBadCredentials(Exception ex) {
+                log.warn("Authentication failed: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.UNAUTHORIZED)
+                                .body(ApiResponseDto.error("Invalid email or password."));
+        }
+
+        @ExceptionHandler(AccessDeniedException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleAccessDenied(AccessDeniedException ex) {
+                log.warn("Access denied: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.FORBIDDEN)
+                                .body(ApiResponseDto.error("You do not have permission to access this resource."));
+        }
+
+        @ExceptionHandler({IllegalArgumentException.class, IllegalStateException.class})
+        public ResponseEntity<ApiResponseDto<Void>> handleIllegalArgOrState(RuntimeException ex) {
+                log.warn("Invalid argument or state: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.BAD_REQUEST)
+                                .body(ApiResponseDto.error(ex.getMessage()));
+        }
+
+        @ExceptionHandler(Exception.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleGenericException(Exception ex) {
+                log.error("Unexpected error occurred: {}", ex.getMessage(), ex);
+                return ResponseEntity
+                                .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                                .body(ApiResponseDto.error("An unexpected error occurred. Please try again later."));
+        }
 }
