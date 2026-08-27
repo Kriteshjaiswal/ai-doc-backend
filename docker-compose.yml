@@ -52,7 +52,7 @@ services:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:*,http://127.0.0.1:*,http://*:*,https://*}
       JWT_SECRET: ${JWT_SECRET:-dGhpcyBpcyBhIHNlY3VyZSBqd3Qgc2VjcmV0IGtleSBmb3IgYWlkb2NxYSBhcHBsaWNhdGlvbiEh}
     ports:
-      - "${BACKEND_PORT:-9090}:8080"
+      - "${BACKEND_PORT:-9090}:9090"
     volumes:
       - uploads_data:/app/uploads
     networks:

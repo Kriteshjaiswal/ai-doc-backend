@@ -31,6 +31,34 @@ public class Document {
     @Column(name = "extracted_text", columnDefinition = "LONGTEXT")
     private String extractedText;
 
+    @Column(name = "page_count")
+    @Builder.Default
+    private Integer pageCount = 1;
+
+    @Column(name = "mime_type")
+    @Builder.Default
+    private String mimeType = "application/pdf";
+
+    @Column(name = "analysis_status", nullable = false)
+    @Builder.Default
+    private String analysisStatus = "UPLOADED";
+
+    @Lob
+    @Column(name = "summary", columnDefinition = "LONGTEXT")
+    private String summary;
+
+    @Lob
+    @Column(name = "analysis_json", columnDefinition = "LONGTEXT")
+    private String analysisJson;
+
+    @Lob
+    @Column(name = "notes_json", columnDefinition = "LONGTEXT")
+    private String notesJson;
+
+    @Lob
+    @Column(name = "bookmarks_json", columnDefinition = "LONGTEXT")
+    private String bookmarksJson;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id")
     private User user;
@@ -45,5 +73,8 @@ public class Document {
     @PrePersist
     protected void onCreate() {
         this.uploadedAt = LocalDateTime.now();
+        if (this.analysisStatus == null) {
+            this.analysisStatus = "UPLOADED";
+        }
     }
 }

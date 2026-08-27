@@ -33,11 +33,11 @@ COPY --from=build /app/target/*.jar app.jar
 USER appuser
 
 # Expose port
-EXPOSE 8080
+EXPOSE 9090
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api-docs || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:9090/api-docs || exit 1
 
 # JVM tuning for containers
 ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/./urandom"

@@ -43,21 +43,34 @@ public class ChatService {
 
         List<String> pageImagesBase64 = null;
 
+        StringBuilder contextBuilder = new StringBuilder();
+
         if (request.getDocumentId() != null) {
             try {
                 document = documentService.getDocumentById(request.getDocumentId(), user);
                 if (document != null) {
-                    contextText = document.getExtractedText();
+                    contextBuilder.append("=== DOCUMENT METADATA ===\n");
+                    contextBuilder.append("Document Name: ").append(document.getFileName()).append("\n");
+                    contextBuilder.append("Total Pages: ").append(document.getPageCount() != null ? document.getPageCount() : 1).append("\n");
+                    if (document.getSummary() != null && !document.getSummary().isBlank()) {
+                        contextBuilder.append("Executive Overview: ").append(document.getSummary()).append("\n");
+                    }
+                    contextBuilder.append("=========================\n\n");
+
+                    String extracted = document.getExtractedText();
+                    if (extracted != null && !extracted.isBlank()) {
+                        contextBuilder.append(extracted);
+                    }
                 }
                 if (document != null && document.getFilePath() != null) {
                     File pdfFile = new File(document.getFilePath());
                     if (pdfFile.exists()) {
-                        if (contextText == null || contextText.isBlank()) {
-                            contextText = pdfExtractorService.extractStructuredDocContext(pdfFile);
+                        if (contextBuilder.length() < 50) {
+                            String structured = pdfExtractorService.extractStructuredDocContext(pdfFile);
+                            contextBuilder.append(structured != null ? structured : "");
                         }
-                        // If extracted text is short or sparse (< 100 chars), render page images for
-                        // vision/OCR analysis
-                        if (contextText == null || contextText.trim().length() < 100) {
+                        // If extracted text is short (< 150 chars), render page images for vision OCR analysis
+                        if (contextBuilder.length() < 150) {
                             pageImagesBase64 = pdfExtractorService.renderPdfPagesAsBase64(pdfFile, 5);
                         }
                     }
@@ -67,6 +80,8 @@ public class ChatService {
                         e.getMessage());
             }
         }
+
+        contextText = contextBuilder.toString();
 
         log.info("Processing question: '{}' (documentId: {}) by user: {}", request.getQuestion(),
                 request.getDocumentId(), user.getEmail());

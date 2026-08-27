@@ -15,5 +15,8 @@ public class DocumentResponseDto {
     private String fileName;
     private Long fileSize;
     private LocalDateTime uploadedAt;
+    private Integer pageCount;
+    private String analysisStatus;
+    private String summary;
     private String extractedText;
 }
