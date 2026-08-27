@@ -58,6 +58,12 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Jackson JSR-310 Java 8 Date/Time -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+        </dependency>
+
         <!-- Apache PDFBox -->
         <dependency>
             <groupId>org.apache.pdfbox</groupId>

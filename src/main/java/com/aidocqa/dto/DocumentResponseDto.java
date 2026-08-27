@@ -3,6 +3,7 @@ package com.aidocqa.dto;
 import lombok.*;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Getter
 @Setter
@@ -19,4 +20,6 @@ public class DocumentResponseDto {
     private String analysisStatus;
     private String summary;
     private String extractedText;
+    private Integer notesCount;
+    private List<DocumentNoteDto> notes;
 }

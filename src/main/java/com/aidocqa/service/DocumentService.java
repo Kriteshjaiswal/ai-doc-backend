@@ -44,7 +44,17 @@ public class DocumentService {
     private final FlashcardRepository flashcardRepository;
     private final PdfExtractorService pdfExtractorService;
     private final DocumentAnalysisService documentAnalysisService;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = createObjectMapper();
+
+    private static ObjectMapper createObjectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        try {
+            mapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
+            mapper.disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+            mapper.disable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        } catch (Exception ignored) {}
+        return mapper;
+    }
 
     @Value("${file.upload-dir}")
     private String uploadDir;
@@ -136,7 +146,26 @@ public class DocumentService {
             }
         }
 
-        if (analysisDto == null) {
+        int actualPageCount = document.getPageCount() != null ? document.getPageCount() : 1;
+        if (analysisDto != null) {
+            boolean hasGenericSections = analysisDto.getSections() == null || analysisDto.getSections().isEmpty() ||
+                    analysisDto.getSections().stream().anyMatch(s -> s.getTitle() != null && s.getTitle().toLowerCase().contains("chapters & disclosures"));
+
+            if (hasGenericSections && pdfFile.exists()) {
+                int pagesToRead = Math.min(actualPageCount, actualPageCount <= 100 ? actualPageCount : 300);
+                Map<Integer, String> paginatedText = documentAnalysisService.extractPagesText(pdfFile, pagesToRead);
+                List<DocumentAnalysisResponseDto.SectionDto> realSections = documentAnalysisService.extractDocumentSectionsFromPdf(
+                        pdfFile, paginatedText, actualPageCount, analysisDto.getDocumentType(), document.getExtractedText());
+                if (realSections != null && !realSections.isEmpty()) {
+                    analysisDto.setSections(realSections);
+                    try {
+                        document.setAnalysisJson(objectMapper.writeValueAsString(analysisDto));
+                        documentRepository.save(document);
+                    } catch (Exception ignored) {}
+                }
+            }
+            documentAnalysisService.sanitizeAndValidateAnalysis(analysisDto, actualPageCount);
+        } else {
             analysisDto = documentAnalysisService.analyzeDocument(document, pdfFile);
             try {
                 document.setAnalysisJson(objectMapper.writeValueAsString(analysisDto));
@@ -158,7 +187,7 @@ public class DocumentService {
                 .id(document.getId())
                 .fileName(document.getFileName())
                 .fileSize(document.getFileSize())
-                .pageCount(document.getPageCount() != null ? document.getPageCount() : 1)
+                .pageCount(actualPageCount)
                 .mimeType(document.getMimeType() != null ? document.getMimeType() : "application/pdf")
                 .uploadedAt(document.getUploadedAt())
                 .analysisStatus(document.getAnalysisStatus() != null ? document.getAnalysisStatus() : "COMPLETED")
@@ -175,15 +204,34 @@ public class DocumentService {
      */
     public DocumentAnalysisResponseDto getDocumentAnalysis(Long id, User user) {
         Document document = getDocumentById(id, user);
+        File pdfFile = new File(document.getFilePath());
+        int actualPageCount = document.getPageCount() != null ? document.getPageCount() : 1;
         if (document.getAnalysisJson() != null && !document.getAnalysisJson().isBlank()) {
             try {
-                return objectMapper.readValue(document.getAnalysisJson(), DocumentAnalysisResponseDto.class);
+                DocumentAnalysisResponseDto analysisDto = objectMapper.readValue(document.getAnalysisJson(), DocumentAnalysisResponseDto.class);
+                boolean hasGenericSections = analysisDto.getSections() == null || analysisDto.getSections().isEmpty() ||
+                        analysisDto.getSections().stream().anyMatch(s -> s.getTitle() != null && s.getTitle().toLowerCase().contains("chapters & disclosures"));
+
+                if (hasGenericSections && pdfFile.exists()) {
+                    int pagesToRead = Math.min(actualPageCount, actualPageCount <= 100 ? actualPageCount : 300);
+                    Map<Integer, String> paginatedText = documentAnalysisService.extractPagesText(pdfFile, pagesToRead);
+                    List<DocumentAnalysisResponseDto.SectionDto> realSections = documentAnalysisService.extractDocumentSectionsFromPdf(
+                            pdfFile, paginatedText, actualPageCount, analysisDto.getDocumentType(), document.getExtractedText());
+                    if (realSections != null && !realSections.isEmpty()) {
+                        analysisDto.setSections(realSections);
+                        try {
+                            document.setAnalysisJson(objectMapper.writeValueAsString(analysisDto));
+                            documentRepository.save(document);
+                        } catch (Exception ignored) {}
+                    }
+                }
+                documentAnalysisService.sanitizeAndValidateAnalysis(analysisDto, actualPageCount);
+                return analysisDto;
             } catch (Exception e) {
                 log.warn("Error parsing analysis JSON: {}", e.getMessage());
             }
         }
 
-        File pdfFile = new File(document.getFilePath());
         DocumentAnalysisResponseDto analysis = documentAnalysisService.analyzeDocument(document, pdfFile);
         try {
             document.setAnalysisJson(objectMapper.writeValueAsString(analysis));
@@ -302,12 +350,24 @@ public class DocumentService {
         Document document = getDocumentById(id, user);
         List<DocumentNoteDto> notes = new ArrayList<>(parseNotes(document.getNotesJson()));
 
-        if (newNote.getId() == null || newNote.getId().isBlank()) {
-            newNote.setId(UUID.randomUUID().toString());
+        boolean updated = false;
+        if (newNote.getId() != null && !newNote.getId().isBlank()) {
+            for (int i = 0; i < notes.size(); i++) {
+                if (Objects.equals(notes.get(i).getId(), newNote.getId())) {
+                    newNote.setCreatedAt(notes.get(i).getCreatedAt() != null ? notes.get(i).getCreatedAt() : LocalDateTime.now());
+                    newNote.setUpdatedAt(LocalDateTime.now());
+                    notes.set(i, newNote);
+                    updated = true;
+                    break;
+                }
+            }
         }
-        newNote.setCreatedAt(LocalDateTime.now());
-        newNote.setUpdatedAt(LocalDateTime.now());
-        notes.add(0, newNote);
+        if (!updated) {
+            newNote.setId(UUID.randomUUID().toString());
+            newNote.setCreatedAt(LocalDateTime.now());
+            newNote.setUpdatedAt(LocalDateTime.now());
+            notes.add(0, newNote);
+        }
 
         try {
             document.setNotesJson(objectMapper.writeValueAsString(notes));
@@ -419,6 +479,7 @@ public class DocumentService {
     }
 
     private DocumentResponseDto mapToDto(Document document) {
+        List<DocumentNoteDto> notes = parseNotes(document.getNotesJson());
         return DocumentResponseDto.builder()
                 .id(document.getId())
                 .fileName(document.getFileName())
@@ -428,6 +489,8 @@ public class DocumentService {
                 .summary(document.getSummary())
                 .uploadedAt(document.getUploadedAt())
                 .extractedText(document.getExtractedText())
+                .notesCount(notes.size())
+                .notes(notes)
                 .build();
     }
 }

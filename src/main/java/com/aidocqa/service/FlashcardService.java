@@ -110,7 +110,8 @@ public class FlashcardService {
 
     private List<Map<String, String>> generateRawFlashcardsWithAI(String text, int count) {
         String prompt = """
-                Extract %d key educational flashcard question-and-answer pairs from the document text.
+                Extract %d high-quality educational flashcard question-and-answer pairs covering the ENTIRE document from start to finish.
+                Ensure coverage spans early foundational concepts, main chapters, and concluding takeaways across the whole document.
                 Return ONLY a raw JSON array of objects with keys: "question", "answer", and "difficulty" (value MUST be "Easy", "Medium", or "Hard").
                 Do NOT include markdown formatting or backticks like ```json ... ```. Output raw JSON array directly:
                 [
