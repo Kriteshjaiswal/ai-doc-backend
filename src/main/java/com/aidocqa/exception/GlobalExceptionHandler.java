@@ -25,6 +25,14 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+        @ExceptionHandler(UserAlreadyExistsException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleUserAlreadyExists(UserAlreadyExistsException ex) {
+                log.warn("Registration conflict: {}", ex.getMessage());
+                return ResponseEntity
+                                .status(HttpStatus.CONFLICT)
+                                .body(ApiResponseDto.error(ex.getMessage()));
+        }
+
         @ExceptionHandler(DocumentNotFoundException.class)
         public ResponseEntity<ApiResponseDto<Void>> handleDocumentNotFound(DocumentNotFoundException ex) {
                 log.warn("Document not found: {}", ex.getMessage());
@@ -63,7 +71,7 @@ public class GlobalExceptionHandler {
                 return ResponseEntity
                                 .status(HttpStatus.SERVICE_UNAVAILABLE)
                                 .body(ApiResponseDto
-                                                .error("AI service is currently unavailable. Please try again later."));
+                                                .error("AI service is temporarily unavailable. Please try again in a moment."));
         }
 
         @ExceptionHandler(MaxUploadSizeExceededException.class)
@@ -77,8 +85,11 @@ public class GlobalExceptionHandler {
         @ExceptionHandler(MethodArgumentNotValidException.class)
         public ResponseEntity<ApiResponseDto<Void>> handleValidation(MethodArgumentNotValidException ex) {
                 String errors = ex.getBindingResult().getFieldErrors().stream()
-                                .map(error -> error.getField() + ": " + error.getDefaultMessage())
+                                .map(error -> error.getDefaultMessage() != null ? error.getDefaultMessage() : error.getField() + " is invalid")
                                 .collect(Collectors.joining(", "));
+                if (errors.isBlank()) {
+                        errors = "Please provide valid input fields.";
+                }
                 log.warn("Validation failed: {}", errors);
                 return ResponseEntity
                                 .status(HttpStatus.BAD_REQUEST)
@@ -132,15 +143,18 @@ public class GlobalExceptionHandler {
                 log.warn("Malformed JSON request: {}", ex.getMessage());
                 return ResponseEntity
                                 .status(HttpStatus.BAD_REQUEST)
-                                .body(ApiResponseDto.error("Malformed request payload."));
+                                .body(ApiResponseDto.error("Malformed request payload. Please check your submission."));
         }
 
         @ExceptionHandler({BadCredentialsException.class, UsernameNotFoundException.class})
         public ResponseEntity<ApiResponseDto<Void>> handleBadCredentials(Exception ex) {
                 log.warn("Authentication failed: {}", ex.getMessage());
+                String msg = (ex.getMessage() != null && !ex.getMessage().isBlank() && !ex.getMessage().contains("org.springframework"))
+                                ? ex.getMessage()
+                                : "Invalid email or password. Please verify your credentials and try again.";
                 return ResponseEntity
                                 .status(HttpStatus.UNAUTHORIZED)
-                                .body(ApiResponseDto.error("Invalid email or password."));
+                                .body(ApiResponseDto.error(msg));
         }
 
         @ExceptionHandler(AccessDeniedException.class)
@@ -153,10 +167,25 @@ public class GlobalExceptionHandler {
 
         @ExceptionHandler({IllegalArgumentException.class, IllegalStateException.class})
         public ResponseEntity<ApiResponseDto<Void>> handleIllegalArgOrState(RuntimeException ex) {
-                log.warn("Invalid argument or state: {}", ex.getMessage());
+                log.warn("Bad request: {}", ex.getMessage());
+                String msg = (ex.getMessage() != null && !ex.getMessage().isBlank()) ? ex.getMessage() : "Invalid request parameters.";
                 return ResponseEntity
                                 .status(HttpStatus.BAD_REQUEST)
-                                .body(ApiResponseDto.error(ex.getMessage()));
+                                .body(ApiResponseDto.error(msg));
+        }
+
+        @ExceptionHandler(RuntimeException.class)
+        public ResponseEntity<ApiResponseDto<Void>> handleRuntimeException(RuntimeException ex) {
+                log.warn("Application runtime issue: {}", ex.getMessage());
+                String msg = ex.getMessage();
+                if (msg != null && !msg.isBlank() && !msg.contains("Exception") && !msg.contains("at ") && !msg.contains("com.") && !msg.contains("org.")) {
+                        return ResponseEntity
+                                        .status(HttpStatus.BAD_REQUEST)
+                                        .body(ApiResponseDto.error(msg));
+                }
+                return ResponseEntity
+                                .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                                .body(ApiResponseDto.error("An unexpected error occurred. Please try again later."));
         }
 
         @ExceptionHandler(Exception.class)
@@ -164,6 +193,6 @@ public class GlobalExceptionHandler {
                 log.error("Unexpected error occurred: {}", ex.getMessage(), ex);
                 return ResponseEntity
                                 .status(HttpStatus.INTERNAL_SERVER_ERROR)
-                                .body(ApiResponseDto.error("An unexpected error occurred. Please try again later."));
+                                .body(ApiResponseDto.error("An unexpected server error occurred. Please try again later."));
         }
 }

@@ -6,6 +6,8 @@ import com.aidocqa.dto.OAuthConfigDto;
 import com.aidocqa.dto.OAuthLoginRequestDto;
 import com.aidocqa.dto.RegisterRequestDto;
 import com.aidocqa.entity.User;
+import com.aidocqa.exception.ResourceNotFoundException;
+import com.aidocqa.exception.UserAlreadyExistsException;
 import com.aidocqa.repository.UserRepository;
 import com.aidocqa.security.JwtService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -15,6 +17,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -51,14 +54,17 @@ public class AuthService {
     private String githubClientSecret;
 
     public AuthenticationResponseDto register(RegisterRequestDto request) {
+        String normalizedEmail = request.getEmail() != null ? request.getEmail().trim().toLowerCase() : "";
+        String normalizedFullName = request.getFullName() != null ? request.getFullName().trim() : "";
+
         // Check if email already exists
-        if (userRepository.findByEmail(request.getEmail()).isPresent()) {
-            throw new RuntimeException("Email is already registered");
+        if (userRepository.findByEmail(normalizedEmail).isPresent()) {
+            throw new UserAlreadyExistsException("An account with this email already exists. Please sign in instead.");
         }
 
         User user = User.builder()
-                .fullName(request.getFullName())
-                .email(request.getEmail())
+                .fullName(normalizedFullName)
+                .email(normalizedEmail)
                 .password(passwordEncoder.encode(request.getPassword()))
                 .role("USER")
                 .provider("LOCAL")
@@ -77,15 +83,22 @@ public class AuthService {
     }
 
     public AuthenticationResponseDto login(LoginRequestDto request) {
-        authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(
-                        request.getEmail(),
-                        request.getPassword()
-                )
-        );
+        String normalizedEmail = request.getEmail() != null ? request.getEmail().trim().toLowerCase() : "";
 
-        User user = userRepository.findByEmail(request.getEmail())
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        try {
+            authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(
+                            normalizedEmail,
+                            request.getPassword()
+                    )
+            );
+        } catch (BadCredentialsException ex) {
+            log.warn("Failed login attempt for email: {}", normalizedEmail);
+            throw new BadCredentialsException("Invalid email or password. Please verify your credentials and try again.");
+        }
+
+        User user = userRepository.findByEmail(normalizedEmail)
+                .orElseThrow(() -> new ResourceNotFoundException("No account found with this email. Please register first."));
 
         log.info("User logged in successfully: {}", user.getEmail());
 
