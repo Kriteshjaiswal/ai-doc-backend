@@ -3,7 +3,7 @@ package com.aidocqa.controller;
 import com.aidocqa.dto.ApiResponseDto;
 import com.aidocqa.dto.FlashcardResponseDto;
 import com.aidocqa.dto.FlashcardStatusUpdateRequestDto;
-import com.aidocqa.entity.User;
+import com.aidocqa.security.UserPrincipal;
 import com.aidocqa.service.FlashcardService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -27,7 +27,7 @@ public class FlashcardController {
     @Operation(summary = "Get flashcards", description = "Retrieve all flashcards for authenticated user, optionally filtered by documentId")
     public ResponseEntity<ApiResponseDto<List<FlashcardResponseDto>>> getFlashcards(
             @RequestParam(value = "documentId", required = false) Long documentId,
-            @AuthenticationPrincipal User user) {
+            @AuthenticationPrincipal UserPrincipal user) {
 
         List<FlashcardResponseDto> response = flashcardService.getFlashcards(user, documentId);
         return ResponseEntity.ok(ApiResponseDto.success("Flashcards retrieved successfully", response));
@@ -38,7 +38,7 @@ public class FlashcardController {
     public ResponseEntity<ApiResponseDto<List<FlashcardResponseDto>>> generateFlashcards(
             @RequestParam("documentId") Long documentId,
             @RequestParam(value = "count", defaultValue = "5") int count,
-            @AuthenticationPrincipal User user) {
+            @AuthenticationPrincipal UserPrincipal user) {
 
         List<FlashcardResponseDto> response = flashcardService.generateFlashcards(documentId, count, user);
         return ResponseEntity
@@ -51,7 +51,7 @@ public class FlashcardController {
     public ResponseEntity<ApiResponseDto<FlashcardResponseDto>> updateFlashcardStatus(
             @PathVariable Long id,
             @RequestBody FlashcardStatusUpdateRequestDto dto,
-            @AuthenticationPrincipal User user) {
+            @AuthenticationPrincipal UserPrincipal user) {
 
         FlashcardResponseDto response = flashcardService.updateFlashcardStatus(id, dto, user);
         return ResponseEntity.ok(ApiResponseDto.success("Flashcard status updated", response));
@@ -61,7 +61,7 @@ public class FlashcardController {
     @Operation(summary = "Delete flashcard", description = "Delete a flashcard by ID")
     public ResponseEntity<ApiResponseDto<Void>> deleteFlashcard(
             @PathVariable Long id,
-            @AuthenticationPrincipal User user) {
+            @AuthenticationPrincipal UserPrincipal user) {
 
         flashcardService.deleteFlashcard(id, user);
         return ResponseEntity.ok(ApiResponseDto.success("Flashcard deleted successfully"));

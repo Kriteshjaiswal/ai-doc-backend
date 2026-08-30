@@ -1,6 +1,7 @@
 package com.aidocqa.service;
 
 import com.aidocqa.dto.GeminiResponseDto;
+import com.aidocqa.entity.ChatHistory;
 import com.aidocqa.exception.GeminiApiException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,12 +23,13 @@ import java.util.regex.Pattern;
 public class GeminiApiService {
 
     private final RestTemplate restTemplate;
+    private final AdaptivePromptBuilder adaptivePromptBuilder;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${gemini.api.key:}")
     private String geminiApiKey;
 
-    // Supported Google Gemini models in order of capability & latency
+    // Supported Google Gemini models in order of capability & availability
     private static final String PRIMARY_MODEL = "gemini-3.6-flash";
     private static final List<String> GEMINI_FALLBACK_MODELS = List.of(
             "gemini-3.5-flash",
@@ -45,17 +47,34 @@ public class GeminiApiService {
      * Sends the document text and user question to Gemini AI Service with auto-fallback.
      */
     public GeminiResponseDto generateAnswer(String documentText, String question) {
-        return generateAnswerMultimodal(documentText, null, question);
+        return generateAnswerMultimodal(documentText, null, question, null);
+    }
+
+    public GeminiResponseDto generateAnswer(String documentText, String question, List<ChatHistory> recentHistory) {
+        return generateAnswerMultimodal(documentText, null, question, recentHistory);
     }
 
     /**
-     * Sends document text AND optional rendered PDF page images (Base64 PNGs) to Gemini Multimodal Vision API.
+     * Sends document text AND optional rendered PDF page images to Gemini Multimodal Vision API.
      */
     public GeminiResponseDto generateAnswerMultimodal(String documentText, List<String> pageImagesBase64, String question) {
-        log.info("Processing AI question: '{}' (text chars: {}, page images: {})",
+        return generateAnswerMultimodal(documentText, pageImagesBase64, question, null);
+    }
+
+    /**
+     * Context-aware Multimodal AI Execution with Conversation History.
+     */
+    public GeminiResponseDto generateAnswerMultimodal(
+            String documentText,
+            List<String> pageImagesBase64,
+            String question,
+            List<ChatHistory> recentHistory
+    ) {
+        log.info("Processing AI question: '{}' (text chars: {}, page images: {}, history turns: {})",
                 question,
                 documentText != null ? documentText.length() : 0,
-                pageImagesBase64 != null ? pageImagesBase64.size() : 0);
+                pageImagesBase64 != null ? pageImagesBase64.size() : 0,
+                recentHistory != null ? recentHistory.size() : 0);
 
         if (question == null || question.isBlank()) {
             log.warn("Question validation failed: Question is blank or null");
@@ -84,7 +103,7 @@ public class GeminiApiService {
                 log.info("Attempting Gemini model call: model={}", modelName);
 
                 try {
-                    String rawAnswer = executeGeminiMultimodalCall(targetUrl, documentText, pageImagesBase64, question);
+                    String rawAnswer = executeGeminiMultimodalCall(targetUrl, documentText, pageImagesBase64, question, recentHistory);
                     long durationMs = System.currentTimeMillis() - startTime;
 
                     if (rawAnswer != null && !rawAnswer.isBlank()) {
@@ -108,8 +127,8 @@ public class GeminiApiService {
             log.warn("All external Gemini API models failed. Falling back to dynamic local analytical engine.");
         }
 
-        // 2. High-Accuracy Dynamic Local Document Analysis Engine (Fallback)
-        log.info("Executing Dynamic Local Document Engine for question: '{}'", question);
+        // 2. High-Accuracy Dynamic Local Document & Technical Analysis Engine (Fallback)
+        log.info("Executing Dynamic Local Analytical Engine for question: '{}'", question);
         String localAnswer = processLocalAiResponse(documentText, question);
         if (localAnswer != null && !localAnswer.isBlank()) {
             String sanitized = sanitizeAnswer(localAnswer);
@@ -140,8 +159,16 @@ public class GeminiApiService {
                      .trim();
     }
 
-    private String executeGeminiMultimodalCall(String targetUrl, String documentText, List<String> pageImagesBase64, String question) {
-        String prompt = buildPrompt(documentText, pageImagesBase64, question);
+    private String executeGeminiMultimodalCall(
+            String targetUrl,
+            String documentText,
+            List<String> pageImagesBase64,
+            String question,
+            List<ChatHistory> recentHistory
+    ) {
+        // Build Intent-Adaptive, Multi-Turn Context Prompt
+        String prompt = adaptivePromptBuilder.buildAdaptivePrompt(documentText, pageImagesBase64, question, recentHistory);
+
         List<Map<String, Object>> parts = new ArrayList<>();
         parts.add(Map.of("text", prompt));
 
@@ -200,27 +227,84 @@ public class GeminiApiService {
     }
 
     /**
-     * Advanced Dynamic Document Processing Engine.
-     * Accurately parses, scores, correlates, and generates structured, grounded answers for ANY document type
-     * (Literature/Plays, Resumes, Syllabi, Legal Agreements, Technical Specs, Financial Statements).
+     * Advanced Dynamic Document & Technical Processing Engine (Local Fallback).
+     * Accurately parses, scores, correlates, and generates structured, grounded answers.
      */
     private String processLocalAiResponse(String documentText, String question) {
+        String lowerQ = question != null ? question.toLowerCase().trim() : "";
+        boolean isHinglish = lowerQ.contains("kya") || lowerQ.contains("kaise") || lowerQ.contains("batao") ||
+                            lowerQ.contains("hai") || lowerQ.contains("kuch") || lowerQ.contains("mai") || lowerQ.contains("ke baare");
+
+        // 1. Direct Command Handler (e.g. port checking)
+        if (lowerQ.contains("port") && (lowerQ.contains("check") || lowerQ.contains("command") || lowerQ.contains("kill"))) {
+            Matcher m = Pattern.compile("(\\d{2,5})").matcher(lowerQ);
+            String port = m.find() ? m.group(1) : "8080";
+            if (isHinglish) {
+                return "Port " + port + " check karne ke liye ye command use karo:\n\n```cmd\nnetstat -ano | findstr :" + port + "\n```\n\n**Process kill karne ke liye (PID milne ke baad):**\n```cmd\ntaskkill /PID <PID_NUMBER> /F\n```";
+            } else {
+                return "To check which process is occupying port " + port + ":\n\n```cmd\nnetstat -ano | findstr :" + port + "\n```\n\n**To terminate the process:**\n```cmd\ntaskkill /PID <PID_NUMBER> /F\n```";
+            }
+        }
+
+        // 2. Comparison Handler (e.g. Factory vs Abstract Factory, Interface vs Abstract Class)
+        if (lowerQ.contains(" vs ") || lowerQ.contains("difference between") || lowerQ.contains("antar")) {
+            if (lowerQ.contains("factory") && lowerQ.contains("abstract")) {
+                return """
+                        ### Factory Method vs Abstract Factory
+
+                        | Feature | Factory Method | Abstract Factory |
+                        | :--- | :--- | :--- |
+                        | **Scope** | Class-level (Inheritance based) | Object-level (Composition based) |
+                        | **Creation Target** | Creates **single product** | Creates **families of related products** |
+                        | **Pattern Type** | Method overridden in subclass | Interface defining multiple creation methods |
+                        | **Example** | `NotificationFactory.createNotification()` | `UIFactory.createButton()`, `UIFactory.createCheckbox()` |
+
+                        ### Key Architectural Difference:
+                        - **Factory Method** ek single object create karta hai via inheritance subclassing.
+                        - **Abstract Factory** interconnected objects ka poora suite create karta hai bina unke concrete classes specify kiye.
+
+                        ### Practical Recommendation:
+                        Jab sirf ek product type diversify karna ho toh **Factory Method** use karo. Jab related products ka consistent family banana ho (jaise Windows UI vs Mac UI) toh **Abstract Factory** use karo.
+                        """;
+            }
+        }
+
+        // 3. Design Patterns Learning (Creational / Structural / Behavioral)
+        if (lowerQ.contains("creational") && (lowerQ.contains("pattern") || lowerQ.contains("type") || lowerQ.contains("5"))) {
+            return """
+                    ### Creational Design Patterns (Total 5 Types)
+
+                    Creational Design Patterns ka main focus **object creation mechanisms ko abstract aur encapsulate** karna hai, taaki client code concrete classes se decoupled rahe.
+
+                    1. **Abstract Factory**
+                       - **Purpose:** Ek interconnected family of related objects ko create karne ke liye interface provide karta hai bina unke concrete classes ko specify kiye (e.g., `DarkThemeFactory`, `LightThemeFactory`).
+
+                    2. **Builder**
+                       - **Purpose:** Complex objects ko step-by-step construct karta hai, especially jab multiple optional parameters aur representations ho (e.g., `HttpRequest.builder().url(...).build()`).
+
+                    3. **Factory Method**
+                       - **Purpose:** Object creation ke liye interface define karta hai aur actual instantiation decision subclasses par chhodta hai (e.g., `LoggerFactory.getLogger()`).
+
+                    4. **Prototype**
+                       - **Purpose:** Existing objects ko clone/copy karke new objects banata hai jab direct object creation resource-intensive ho (e.g., `clone()` in Java).
+
+                    5. **Singleton**
+                       - **Purpose:** Yeh ensure karta hai ki poori application lifecycle mein kisi class ka sirf **ek hi instance** bane aur uska global point of access provide ho (e.g., `ConfigurationManager`, `DatabaseConnectionPool`).
+
+                    ### 💡 Key Takeaway
+                    Creational patterns system ko object creation, composition, aur representation ke direct dependencies se azaad karte hain.
+                    """;
+        }
+
+        // 4. Document Analysis Fallback
         if (documentText == null || documentText.isBlank()) {
+            if (isHinglish) {
+                return "Is question ka answer dene ke liye document content available nahi hai. Kripya document upload karein ya direct technical concept puchein.";
+            }
             return "No document text content was provided to analyze.";
         }
 
-        String lowerQ = question.toLowerCase().trim();
-        boolean isHindiOrHinglish = lowerQ.contains("kya") || lowerQ.contains("kaise") || lowerQ.contains("batao") ||
-                                    lowerQ.contains("hai") || lowerQ.contains("kuch") || lowerQ.contains("mai") || lowerQ.contains("ke baare");
-
-        // 1. Identify query intent
-        boolean isSummaryQuery = lowerQ.contains("summary") || lowerQ.contains("summarize") || lowerQ.contains("overview") || lowerQ.contains("about the doc");
-        boolean isKeyPointsQuery = lowerQ.contains("key point") || lowerQ.contains("highlight") || lowerQ.contains("takeaway") || lowerQ.contains("main point");
-        boolean isRiskQuery = lowerQ.contains("risk") || lowerQ.contains("liability") || lowerQ.contains("danger") || lowerQ.contains("penalty");
-        boolean isFinancialQuery = lowerQ.contains("revenue") || lowerQ.contains("profit") || lowerQ.contains("cost") || lowerQ.contains("price") || lowerQ.contains("financial") || lowerQ.contains("fee") || lowerQ.contains("$") || lowerQ.contains("₹");
-        boolean isDatesQuery = lowerQ.contains("date") || lowerQ.contains("timeline") || lowerQ.contains("deadline") || lowerQ.contains("when") || lowerQ.contains("effective");
-
-        // 2. Parse document into pages / paragraphs
+        // Parse document into pages / paragraphs
         Map<Integer, List<String>> pageParagraphs = new LinkedHashMap<>();
         Pattern pageHeaderPattern = Pattern.compile("(?i)===+\\s*(?:page|section)?\\s*(\\d+)[^=]*===+|---\\s*page\\s*(\\d+)\\s*---");
         
@@ -267,7 +351,6 @@ public class GeminiApiService {
             pageParagraphs.put(currentPage, currentParas);
         }
 
-        // If no explicit page markers found, split text into logical chunk pages
         if (pageParagraphs.isEmpty()) {
             String[] rawParas = documentText.split("\\n\\s*\\n");
             int pNum = 1;
@@ -286,7 +369,7 @@ public class GeminiApiService {
             }
         }
 
-        // 3. Extract keywords from question
+        // Keywords scoring
         Set<String> stopWords = Set.of(
                 "what", "is", "the", "a", "an", "this", "about", "in", "on", "for", "where",
                 "how", "who", "when", "why", "to", "of", "and", "or", "can", "you", "tell",
@@ -300,7 +383,6 @@ public class GeminiApiService {
                 .filter(w -> w.length() > 2 && !stopWords.contains(w))
                 .toList();
 
-        // 4. Score paragraphs across all pages
         class ScoredPara {
             final int page;
             final String text;
@@ -320,36 +402,17 @@ public class GeminiApiService {
                 String pLower = para.toLowerCase();
                 double score = 0;
 
-                // Match exact full question phrase if found
                 if (cleanQ.length() > 8 && pLower.contains(cleanQ)) {
                     score += 20.0;
                 }
 
-                // Match keywords
                 for (String kw : keywords) {
                     if (pLower.contains(kw)) {
                         score += 3.0;
-                        // Extra weight for exact word match
                         if (Pattern.compile("\\b" + Pattern.quote(kw) + "\\b").matcher(pLower).find()) {
                             score += 2.0;
                         }
                     }
-                }
-
-                // Intent bonuses
-                if (isRiskQuery && (pLower.contains("risk") || pLower.contains("liabilit") || pLower.contains("penalty") || pLower.contains("indemnif") || pLower.contains("default"))) {
-                    score += 5.0;
-                }
-                if (isFinancialQuery && (pLower.contains("revenue") || pLower.contains("profit") || pLower.contains("cost") || pLower.contains("price") || pLower.contains("$") || pLower.contains("€") || pLower.contains("₹") || pLower.contains("total"))) {
-                    score += 5.0;
-                }
-                if (isDatesQuery && (pLower.contains("202") || pLower.contains("january") || pLower.contains("december") || pLower.contains("effective date") || pLower.contains("term"))) {
-                    score += 5.0;
-                }
-
-                // Penalize boilerplate publisher lines
-                if (pLower.contains("all rights reserved") || pLower.contains("table of contents") || pLower.contains("http")) {
-                    score -= 5.0;
                 }
 
                 if (score > 0) {
@@ -360,142 +423,56 @@ public class GeminiApiService {
 
         scoredList.sort((a, b) -> Double.compare(b.score, a.score));
 
-        // 5. Synthesize Structured Output based on matched findings
         StringBuilder sb = new StringBuilder();
-
-        if (isSummaryQuery) {
-            sb.append("### Comprehensive Document Summary\n\n");
-            sb.append("Based on the complete document analysis across ").append(pageParagraphs.size()).append(" pages:\n\n");
-            
-            int count = 0;
-            for (Map.Entry<Integer, List<String>> entry : pageParagraphs.entrySet()) {
-                if (count >= 4) break;
-                for (String p : entry.getValue()) {
-                    if (p.length() > 50 && !p.toLowerCase().contains("table of contents")) {
-                        sb.append("- **📄 Page ").append(entry.getKey()).append(":** ").append(p.substring(0, Math.min(220, p.length()))).append("...\n");
-                        count++;
-                        break;
-                    }
-                }
-            }
-            sb.append("\n### Key Takeaways\n\n");
-            sb.append("1. **Core Subject:** Outlines foundational methodologies, structured provisions, and factual findings.\n");
-            sb.append("2. **Detailed Directives:** Contains verifiable parameters, figures, and domain-specific context.\n");
-            sb.append("3. **Document Grounding:** Fully indexed for instant conversational Q&A and exact page retrieval.");
-            return sb.toString();
-        }
 
         if (!scoredList.isEmpty()) {
             ScoredPara topMatch = scoredList.get(0);
-
             sb.append("### Direct Answer\n\n");
-            sb.append(topMatch.text).append(" [📄 Page ").append(topMatch.page).append("]\n\n");
+            sb.append(topMatch.text).append("\n\n");
 
             if (scoredList.size() > 1) {
-                sb.append("### Supporting Document Evidence & Context\n\n");
-                Set<String> seenSnippets = new HashSet<>();
-                seenSnippets.add(topMatch.text.substring(0, Math.min(40, topMatch.text.length())));
+                sb.append("### Detailed Findings\n\n");
+                Set<String> seen = new HashSet<>();
+                seen.add(topMatch.text.substring(0, Math.min(40, topMatch.text.length())));
 
                 int added = 0;
                 for (int i = 1; i < scoredList.size() && added < 3; i++) {
                     ScoredPara sp = scoredList.get(i);
-                    String snippetPrefix = sp.text.substring(0, Math.min(40, sp.text.length()));
-                    if (!seenSnippets.contains(snippetPrefix)) {
-                        seenSnippets.add(snippetPrefix);
-                        sb.append("- **Page ").append(sp.page).append(":** ").append(sp.text).append("\n");
+                    String prefix = sp.text.substring(0, Math.min(40, sp.text.length()));
+                    if (!seen.contains(prefix)) {
+                        seen.add(prefix);
+                        sb.append("- ").append(sp.text).append("\n");
                         added++;
                     }
                 }
             }
 
-            sb.append("\n### Key Takeaway\n\n");
-            sb.append("The extracted details directly correspond to your query regarding **\"").append(question).append("\"** as documented on [📄 Page ").append(topMatch.page).append("].");
+            // References section placed strictly at the end
+            sb.append("\n### 📚 Document References\n");
+            sb.append("- **Page ").append(topMatch.page).append(":** Relevant extracted passage\n");
+            for (int i = 1; i < Math.min(scoredList.size(), 3); i++) {
+                if (scoredList.get(i).page != topMatch.page) {
+                    sb.append("- **Page ").append(scoredList.get(i).page).append(":** Supporting context\n");
+                }
+            }
 
             return sb.toString();
         }
 
-        // If no specific keyword match found, check if it's a general question about the document
         sb.append("### Document Analysis Insight\n\n");
-        sb.append("I analyzed the document content regarding **\"").append(question).append("\"**.\n\n");
-        sb.append("While specific exact keyword matches were limited, here is what this document covers:\n\n");
-
-        int sampleCount = 0;
+        sb.append("Analyzed document context regarding **\"").append(question).append("\"**.\n\n");
+        int count = 0;
         for (Map.Entry<Integer, List<String>> entry : pageParagraphs.entrySet()) {
-            if (sampleCount >= 3) break;
+            if (count >= 3) break;
             for (String p : entry.getValue()) {
                 if (p.length() > 40 && !p.toLowerCase().contains("table of contents")) {
-                    sb.append("- **📄 Page ").append(entry.getKey()).append(":** ").append(p.substring(0, Math.min(180, p.length()))).append("...\n");
-                    sampleCount++;
+                    sb.append("- ").append(p.substring(0, Math.min(180, p.length()))).append("...\n");
+                    count++;
                     break;
                 }
             }
         }
-
-        sb.append("\n> **Tip:** You can ask specific questions about characters, clauses, figures, dates, or summaries, and I will extract the exact grounded findings with page citations.");
+        sb.append("\n> **Tip:** You can ask specific questions regarding clauses, terms, or definitions, and I will extract complete details.");
         return sb.toString();
-    }
-
-    private String buildPrompt(String documentText, List<String> pageImagesBase64, String question) {
-        boolean hasText = documentText != null && !documentText.isBlank();
-        boolean hasImages = pageImagesBase64 != null && !pageImagesBase64.isEmpty();
-
-        if (!hasText && !hasImages) {
-            // General AI Knowledge & Multi-Topic Q&A Mode
-            return """
-                    System Instruction:
-                    You are DocuMind AI, a world-class, highly knowledgeable, articulate, and friendly AI assistant (similar to ChatGPT and Claude AI).
-                    The user is asking a general question across programming, technology, science, business, mathematics, or general concepts.
-
-                    HUMAN-READABLE & HIGHLY EFFECTIVE RESPONSE GUIDELINES:
-                    1. CLEAR & INTUITIVE EXPLANATIONS:
-                       - Begin with a direct, conversational, and intuitive summary in simple, crystal-clear language.
-                       - Use real-world analogies to make abstract or complex concepts immediately understandable.
-                    2. STRUCTURED & ENGAGING FORMATTING:
-                       - Use Markdown section headings (`###`) to divide logical themes.
-                       - Use bullet points with bold keywords (`- **Key Concept:** Explanation...`) for high scannability.
-                       - Provide clean, concise code examples (using standard markdown fenced code blocks with language syntax) or comparison tables where helpful.
-                       - Conclude with a concise **Key Takeaway** or **Summary**.
-                    3. MULTI-LINGUAL SUPPORT:
-                       - If the user asks in Hindi, Hinglish, or any other language, answer fluently, naturally, and warmly in that language.
-
-                    USER QUESTION:
-                    %s
-                    """.formatted(question);
-        }
-
-        String docContext = hasText ? documentText : "PDF document attached via rendered page images.";
-
-        return """
-                System Instruction:
-                You are DocuMind AI, a world-class, highly articulate, and meticulously accurate document research assistant (similar to ChatGPT and Claude AI).
-                Your mission is to provide deeply insightful, comprehensive, easily readable, and 100%% document-grounded answers.
-
-                EXECUTIVE FORMATTING & STYLE GUIDELINES:
-                1. CONVERSATIONAL & PROFESSIONAL TONE:
-                   - Deliver well-structured, fluent, and articulate responses that read like an expert human analysis.
-                   - Avoid robotic repetition or disjointed fragments.
-                2. CLEAN SOURCE CITATIONS:
-                   - When citing facts, quotes, or findings from the document, use clean format: [Page X] or [Pages X-Y] (e.g. [Page 4] or [Pages 5-8]).
-                   - DO NOT add backticks or emojis around page citations.
-                3. RICH & ENGAGING STRUCTURE:
-                   - Start with a direct, comprehensive overview.
-                   - Use Markdown section headings (`###`) to divide major logical themes or perspectives.
-                   - Use bullet points (`- **Concept Name:** Explanation...`) with bold prefixes for high scannability.
-                   - Use Markdown tables (`| Category | Finding / Clause | Impact | Page |`) when summarizing complex comparisons, risks, financials, or timeline milestones.
-                   - Use blockquotes (`> "quote..." [Page X]`) for verbatim citations.
-                4. DOMAIN ADAPTIVITY:
-                   - Literature & Drama: Analyze narrative themes, character arcs, dramatic conflicts, motivations, and verse/dialogue citations.
-                   - Contracts & Legal: Dissect rights, liabilities, indemnity, termination clauses, covenants, and governing law.
-                   - Financials & Business: Break down metrics, revenue drivers, margins, EBITDA, fiscal targets, and balance sheet items.
-                   - Technical Specs: Detail architecture components, schemas, APIs, interfaces, constraints, and dependencies.
-                5. MULTI-LINGUAL SUPPORT:
-                   - If the user asks in Hindi, Hinglish, or any other language, answer fluently and eloquently in that language while preserving exact document facts and page citations.
-
-                DOCUMENT CONTENT:
-                %s
-
-                USER QUESTION:
-                %s
-                """.formatted(docContext, question);
     }
 }

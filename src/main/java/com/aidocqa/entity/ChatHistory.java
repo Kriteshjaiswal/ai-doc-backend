@@ -30,9 +30,8 @@ public class ChatHistory {
     @Column(name = "answer", columnDefinition = "LONGTEXT", nullable = false)
     private String answer;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id")
-    private User user;
+    @Column(name = "user_id", nullable = false)
+    private Long userId;
 
     @Column(name = "asked_at", nullable = false)
     private LocalDateTime askedAt;

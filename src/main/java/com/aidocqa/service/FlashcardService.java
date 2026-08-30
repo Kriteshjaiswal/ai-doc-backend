@@ -4,10 +4,10 @@ import com.aidocqa.dto.FlashcardResponseDto;
 import com.aidocqa.dto.FlashcardStatusUpdateRequestDto;
 import com.aidocqa.entity.Document;
 import com.aidocqa.entity.Flashcard;
-import com.aidocqa.entity.User;
 import com.aidocqa.exception.ResourceNotFoundException;
 import com.aidocqa.repository.DocumentRepository;
 import com.aidocqa.repository.FlashcardRepository;
+import com.aidocqa.security.UserPrincipal;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -16,8 +16,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -30,18 +28,18 @@ public class FlashcardService {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Transactional(readOnly = true)
-    public List<FlashcardResponseDto> getFlashcards(User user, Long documentId) {
+    public List<FlashcardResponseDto> getFlashcards(UserPrincipal user, Long documentId) {
         List<Flashcard> cards;
         if (documentId != null) {
-            cards = flashcardRepository.findByDocumentIdAndUserOrderByCreatedAtDesc(documentId, user);
+            cards = flashcardRepository.findByDocumentIdAndUserIdOrderByCreatedAtDesc(documentId, user.getId());
         } else {
-            cards = flashcardRepository.findByUserOrderByCreatedAtDesc(user);
+            cards = flashcardRepository.findByUserIdOrderByCreatedAtDesc(user.getId());
         }
         return cards.stream().map(this::mapToResponseDto).toList();
     }
 
     @Transactional
-    public List<FlashcardResponseDto> generateFlashcards(Long documentId, int count, User user) {
+    public List<FlashcardResponseDto> generateFlashcards(Long documentId, int count, UserPrincipal user) {
         Document document = documentRepository.findByIdAndUserId(documentId, user.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Document not found with ID: " + documentId));
 
@@ -60,7 +58,7 @@ public class FlashcardService {
             String difficulty = cardData.getOrDefault("difficulty", "Medium");
 
             Flashcard flashcard = Flashcard.builder()
-                    .user(user)
+                    .userId(user.getId())
                     .document(document)
                     .question(question)
                     .answer(answer)
@@ -77,11 +75,11 @@ public class FlashcardService {
     }
 
     @Transactional
-    public FlashcardResponseDto updateFlashcardStatus(Long id, FlashcardStatusUpdateRequestDto dto, User user) {
+    public FlashcardResponseDto updateFlashcardStatus(Long id, FlashcardStatusUpdateRequestDto dto, UserPrincipal user) {
         Flashcard flashcard = flashcardRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Flashcard not found with ID: " + id));
 
-        if (!flashcard.getUser().getId().equals(user.getId())) {
+        if (!flashcard.getUserId().equals(user.getId())) {
             throw new ResourceNotFoundException("Flashcard not found with ID: " + id);
         }
 
@@ -97,11 +95,11 @@ public class FlashcardService {
     }
 
     @Transactional
-    public void deleteFlashcard(Long id, User user) {
+    public void deleteFlashcard(Long id, UserPrincipal user) {
         Flashcard flashcard = flashcardRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Flashcard not found with ID: " + id));
 
-        if (!flashcard.getUser().getId().equals(user.getId())) {
+        if (!flashcard.getUserId().equals(user.getId())) {
             throw new ResourceNotFoundException("Flashcard not found with ID: " + id);
         }
 

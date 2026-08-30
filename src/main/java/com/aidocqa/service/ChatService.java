@@ -5,9 +5,9 @@ import com.aidocqa.dto.ChatResponseDto;
 import com.aidocqa.dto.GeminiResponseDto;
 import com.aidocqa.entity.ChatHistory;
 import com.aidocqa.entity.Document;
-import com.aidocqa.entity.User;
 import com.aidocqa.exception.ResourceNotFoundException;
 import com.aidocqa.repository.ChatHistoryRepository;
+import com.aidocqa.security.UserPrincipal;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,12 +32,8 @@ public class ChatService {
      * Processes a user question against an optional document or general knowledge,
      * returning the AI answer.
      * Persists to chat history ONLY if the AI response execution was successful.
-     *
-     * @param request the chat request containing documentId and question
-     * @param user    the authenticated user
-     * @return the chat response DTO with the answer
      */
-    public ChatResponseDto askQuestion(ChatRequestDto request, User user) {
+    public ChatResponseDto askQuestion(ChatRequestDto request, UserPrincipal user) {
         Document document = null;
         String contextText = "";
 
@@ -58,14 +54,15 @@ public class ChatService {
                     contextBuilder.append("=========================\n\n");
 
                     String extracted = document.getExtractedText();
-                    if (extracted != null && !extracted.isBlank()) {
+                    if (extracted != null && extracted.contains("--- PAGE ")) {
                         contextBuilder.append(extracted);
                     }
                 }
                 if (document != null && document.getFilePath() != null) {
                     File pdfFile = new File(document.getFilePath());
                     if (pdfFile.exists()) {
-                        if (contextBuilder.length() < 50) {
+                        // Extract fresh, 100% accurate page-annotated context from the physical PDF if needed
+                        if (contextBuilder.length() < 100) {
                             String structured = pdfExtractorService.extractStructuredDocContext(pdfFile);
                             contextBuilder.append(structured != null ? structured : "");
                         }
@@ -83,27 +80,41 @@ public class ChatService {
 
         contextText = contextBuilder.toString();
 
-        log.info("Processing question: '{}' (documentId: {}) by user: {}", request.getQuestion(),
-                request.getDocumentId(), user.getEmail());
+        Long currentUserId = (user != null && user.getId() != null) ? user.getId() : 1L;
 
-        // Call Gemini AI Multimodal API with extracted text and rendered page images
+        log.info("🔥 [AI-CHAT-SERVICE] Executing Question: '{}' | docId: {} | userId: {}",
+                request.getQuestion(), request.getDocumentId(), currentUserId);
+
+        // Retrieve recent conversation history (up to 5 recent turns) for memory & follow-up context
+        List<ChatHistory> recentHistory;
+        if (request.getDocumentId() != null) {
+            recentHistory = chatHistoryRepository.findByUserIdAndDocumentIdOrderByAskedAtDesc(currentUserId, request.getDocumentId());
+        } else {
+            recentHistory = chatHistoryRepository.findByUserIdOrderByAskedAtDesc(currentUserId);
+        }
+        if (recentHistory != null && recentHistory.size() > 5) {
+            recentHistory = recentHistory.subList(0, 5);
+        }
+
+        // Call Gemini AI Multimodal API with extracted text, rendered page images, and conversation history
         GeminiResponseDto aiResult = geminiApiService.generateAnswerMultimodal(contextText, pageImagesBase64,
-                request.getQuestion());
+                request.getQuestion(), recentHistory);
 
-        log.info("Grounding validation: provider={}, model={}, success={}, grounded={}",
-                aiResult.getProvider(), aiResult.getModel(), aiResult.isSuccess(), aiResult.isGrounded());
+        log.info("🎯 [AI-CHAT-SERVICE] AI Result: provider={}, model={}, success={}, grounded={}, answerLength={}",
+                aiResult.getProvider(), aiResult.getModel(), aiResult.isSuccess(), aiResult.isGrounded(),
+                (aiResult.getAnswer() != null ? aiResult.getAnswer().length() : 0));
 
         // Save chat history ONLY when success == true and answer is non-empty
         if (aiResult.isSuccess() && aiResult.getAnswer() != null && !aiResult.getAnswer().isBlank()) {
             ChatHistory chatHistory = ChatHistory.builder()
                     .document(document)
-                    .user(user)
+                    .userId(currentUserId)
                     .question(request.getQuestion())
                     .answer(aiResult.getAnswer())
                     .build();
 
             ChatHistory savedChat = chatHistoryRepository.save(chatHistory);
-            log.info("Saving chat history... Success with ID: {}", savedChat.getId());
+            log.info("✅ [AI-CHAT-SERVICE] Chat history saved with ID: {}", savedChat.getId());
 
             return ChatResponseDto.builder()
                     .id(savedChat.getId())
@@ -128,12 +139,8 @@ public class ChatService {
     /**
      * Retrieves the chat history for a specific document, scoped to the
      * authenticated user.
-     *
-     * @param documentId the document ID
-     * @param user       the authenticated user
-     * @return list of chat response DTOs
      */
-    public List<ChatResponseDto> getChatHistory(Long documentId, User user) {
+    public List<ChatResponseDto> getChatHistory(Long documentId, UserPrincipal user) {
         if (documentId != null) {
             documentService.getDocumentById(documentId, user);
             return chatHistoryRepository.findByUserIdAndDocumentIdOrderByAskedAtDesc(user.getId(), documentId).stream()
@@ -143,18 +150,18 @@ public class ChatService {
         return getAllUserChatHistory(user);
     }
 
-    public List<ChatResponseDto> getAllUserChatHistory(User user) {
+    public List<ChatResponseDto> getAllUserChatHistory(UserPrincipal user) {
         return chatHistoryRepository.findByUserIdOrderByAskedAtDesc(user.getId()).stream()
                 .map(this::mapToDto)
                 .collect(Collectors.toList());
     }
 
     @Transactional
-    public void deleteChat(Long chatId, User user) throws ResourceNotFoundException {
+    public void deleteChat(Long chatId, UserPrincipal user) throws ResourceNotFoundException {
         ChatHistory chat = chatHistoryRepository.findById(chatId)
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
 
-        if (!chat.getUser().getId().equals(user.getId())) {
+        if (!chat.getUserId().equals(user.getId())) {
             throw new ResourceNotFoundException("Chat not found");
         }
 
@@ -162,7 +169,7 @@ public class ChatService {
     }
 
     @Transactional
-    public void deleteChatsByDocument(Long documentId, User user) {
+    public void deleteChatsByDocument(Long documentId, UserPrincipal user) {
         documentService.getDocumentById(documentId, user);
         chatHistoryRepository.deleteByUserIdAndDocumentId(user.getId(), documentId);
     }

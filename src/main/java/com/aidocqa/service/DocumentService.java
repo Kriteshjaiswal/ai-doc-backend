@@ -3,7 +3,7 @@ package com.aidocqa.service;
 import com.aidocqa.dto.*;
 import com.aidocqa.dto.QuickActionDtos.*;
 import com.aidocqa.entity.Document;
-import com.aidocqa.entity.User;
+import com.aidocqa.security.UserPrincipal;
 import com.aidocqa.exception.DocumentNotFoundException;
 import com.aidocqa.exception.InvalidFileException;
 import com.aidocqa.repository.ChatHistoryRepository;
@@ -63,7 +63,7 @@ public class DocumentService {
      * Uploads a PDF file, calculates exact page count, extracts text,
      * triggers AI document analysis, and stores metadata in the database.
      */
-    public DocumentResponseDto uploadDocument(MultipartFile file, User user) {
+    public DocumentResponseDto uploadDocument(MultipartFile file, UserPrincipal user) {
         FileUtil.validatePdfFile(file);
 
         try {
@@ -92,11 +92,11 @@ public class DocumentService {
                     .mimeType("application/pdf")
                     .analysisStatus("PROCESSING")
                     .extractedText(rawText)
-                    .user(user)
+                    .userId(user.getId())
                     .build();
 
             Document savedDocument = documentRepository.save(document);
-            log.info("Document saved with ID: {} for user: {} with {} pages", savedDocument.getId(), user.getEmail(), pageCount);
+            log.info("Document saved with ID: {} for user ID: {} with {} pages", savedDocument.getId(), user.getId(), pageCount);
 
             // Run AI analysis
             try {
@@ -123,7 +123,7 @@ public class DocumentService {
     /**
      * Retrieves all uploaded documents for the authenticated user.
      */
-    public List<DocumentResponseDto> getAllDocuments(User user) {
+    public List<DocumentResponseDto> getAllDocuments(UserPrincipal user) {
         return documentRepository.findByUserId(user.getId()).stream()
                 .map(this::mapToDto)
                 .collect(Collectors.toList());
@@ -132,7 +132,7 @@ public class DocumentService {
     /**
      * Retrieves detailed document information including AI analysis, notes, and bookmarks.
      */
-    public DocumentDetailResponseDto getDocumentDetail(Long id, User user) {
+    public DocumentDetailResponseDto getDocumentDetail(Long id, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         File pdfFile = new File(document.getFilePath());
 
@@ -202,7 +202,7 @@ public class DocumentService {
     /**
      * Retrieves AI document analysis.
      */
-    public DocumentAnalysisResponseDto getDocumentAnalysis(Long id, User user) {
+    public DocumentAnalysisResponseDto getDocumentAnalysis(Long id, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         File pdfFile = new File(document.getFilePath());
         int actualPageCount = document.getPageCount() != null ? document.getPageCount() : 1;
@@ -247,7 +247,7 @@ public class DocumentService {
     /**
      * Force re-analyzes a document with fresh AI pipeline.
      */
-    public DocumentAnalysisResponseDto reanalyzeDocument(Long id, User user) {
+    public DocumentAnalysisResponseDto reanalyzeDocument(Long id, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         File pdfFile = new File(document.getFilePath());
         log.info("Triggering fresh re-analysis for document ID: {}", id);
@@ -267,7 +267,7 @@ public class DocumentService {
     /**
      * Renames a document.
      */
-    public DocumentResponseDto renameDocument(Long id, String newFileName, User user) {
+    public DocumentResponseDto renameDocument(Long id, String newFileName, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         if (newFileName == null || newFileName.isBlank()) {
             throw new InvalidFileException("Filename cannot be blank");
@@ -287,7 +287,7 @@ public class DocumentService {
     /**
      * Executes a quick action on the document.
      */
-    public QuickActionResponseDto executeQuickAction(Long id, QuickActionRequestDto request, User user) {
+    public QuickActionResponseDto executeQuickAction(Long id, QuickActionRequestDto request, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         File pdfFile = new File(document.getFilePath());
         return documentAnalysisService.executeQuickAction(document, request, pdfFile);
@@ -296,7 +296,7 @@ public class DocumentService {
     /**
      * Serves the raw PDF file bytes for inline browser viewing and download.
      */
-    public byte[] getPdfFileBytes(Long id, User user) {
+    public byte[] getPdfFileBytes(Long id, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         try {
             Path path = Paths.get(document.getFilePath());
@@ -313,7 +313,7 @@ public class DocumentService {
     /**
      * Renders a specific page of the PDF as a high-resolution PNG image byte array.
      */
-    public byte[] renderPdfPage(Long id, int pageNumber, User user) {
+    public byte[] renderPdfPage(Long id, int pageNumber, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         File pdfFile = new File(document.getFilePath());
 
@@ -341,12 +341,12 @@ public class DocumentService {
     // NOTES & BOOKMARKS MANAGEMENT
     // =========================================================================
 
-    public List<DocumentNoteDto> getNotes(Long id, User user) {
+    public List<DocumentNoteDto> getNotes(Long id, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         return parseNotes(document.getNotesJson());
     }
 
-    public List<DocumentNoteDto> addNote(Long id, DocumentNoteDto newNote, User user) {
+    public List<DocumentNoteDto> addNote(Long id, DocumentNoteDto newNote, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         List<DocumentNoteDto> notes = new ArrayList<>(parseNotes(document.getNotesJson()));
 
@@ -378,7 +378,7 @@ public class DocumentService {
         return notes;
     }
 
-    public List<DocumentNoteDto> deleteNote(Long id, String noteId, User user) {
+    public List<DocumentNoteDto> deleteNote(Long id, String noteId, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         List<DocumentNoteDto> notes = new ArrayList<>(parseNotes(document.getNotesJson()));
         notes.removeIf(n -> Objects.equals(n.getId(), noteId));
@@ -392,12 +392,12 @@ public class DocumentService {
         return notes;
     }
 
-    public List<DocumentBookmarkDto> getBookmarks(Long id, User user) {
+    public List<DocumentBookmarkDto> getBookmarks(Long id, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         return parseBookmarks(document.getBookmarksJson());
     }
 
-    public List<DocumentBookmarkDto> addBookmark(Long id, DocumentBookmarkDto newBookmark, User user) {
+    public List<DocumentBookmarkDto> addBookmark(Long id, DocumentBookmarkDto newBookmark, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         List<DocumentBookmarkDto> bookmarks = new ArrayList<>(parseBookmarks(document.getBookmarksJson()));
 
@@ -416,7 +416,7 @@ public class DocumentService {
         return bookmarks;
     }
 
-    public List<DocumentBookmarkDto> deleteBookmark(Long id, String bookmarkId, User user) {
+    public List<DocumentBookmarkDto> deleteBookmark(Long id, String bookmarkId, UserPrincipal user) {
         Document document = getDocumentById(id, user);
         List<DocumentBookmarkDto> bookmarks = new ArrayList<>(parseBookmarks(document.getBookmarksJson()));
         bookmarks.removeIf(b -> Objects.equals(b.getId(), bookmarkId));
@@ -452,7 +452,7 @@ public class DocumentService {
      * Deletes a document by its ID, including the stored file and all associated chat history and flashcards.
      */
     @Transactional
-    public void deleteDocument(Long id, User user) {
+    public void deleteDocument(Long id, UserPrincipal user) {
         Document document = documentRepository.findByIdAndUserId(id, user.getId())
                 .orElseThrow(() -> new DocumentNotFoundException(id));
 
@@ -473,7 +473,7 @@ public class DocumentService {
     /**
      * Retrieves a document entity by its ID, scoped to the authenticated user.
      */
-    public Document getDocumentById(Long id, User user) {
+    public Document getDocumentById(Long id, UserPrincipal user) {
         return documentRepository.findByIdAndUserId(id, user.getId())
                 .orElseThrow(() -> new DocumentNotFoundException(id));
     }

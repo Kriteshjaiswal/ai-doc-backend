@@ -59,9 +59,8 @@ public class Document {
     @Column(name = "bookmarks_json", columnDefinition = "LONGTEXT")
     private String bookmarksJson;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id")
-    private User user;
+    @Column(name = "user_id", nullable = false)
+    private Long userId;
 
     @OneToMany(mappedBy = "document", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default

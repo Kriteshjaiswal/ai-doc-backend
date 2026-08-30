@@ -1,7 +1,9 @@
-package com.aidocqa.entity;
+package com.aidocqa.security;
 
-import jakarta.persistence.*;
-import lombok.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -9,45 +11,30 @@ import org.springframework.security.core.userdetails.UserDetails;
 import java.util.Collection;
 import java.util.List;
 
-@Entity
-@Table(name = "users")
-@Getter
-@Setter
+@Data
+@Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
-public class User implements UserDetails {
+public class UserPrincipal implements UserDetails {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-
-    private String fullName;
-
-    @Column(unique = true, nullable = false)
     private String email;
-
-    @Column(nullable = false)
-    private String password;
-
-    @Column(nullable = false)
-    @Builder.Default
-    private String role = "USER";
-
-    @Column(nullable = false)
-    @Builder.Default
-    private String provider = "LOCAL";
-
-    private String providerId;
+    private String fullName;
+    private String role;
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
-        return List.of(new SimpleGrantedAuthority("ROLE_" + role));
+        return List.of(new SimpleGrantedAuthority("ROLE_" + (role != null ? role.replace("ROLE_", "") : "USER")));
+    }
+
+    @Override
+    public String getPassword() {
+        return null;
     }
 
     @Override
     public String getUsername() {
-        return email;
+        return email != null ? email : (id != null ? String.valueOf(id) : "");
     }
 
     @Override
