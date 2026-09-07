@@ -15,5 +15,6 @@ public class ChatResponseDto {
     private Long documentId;
     private String question;
     private String answer;
+    private String responseDepth;
     private LocalDateTime askedAt;
 }

@@ -13,4 +13,9 @@ public class ChatRequestDto {
 
     @NotBlank(message = "Question cannot be blank")
     private String question;
+
+    /**
+     * Optional response depth override: "LOW", "MEDIUM", or "HIGH"
+     */
+    private String responseDepth;
 }

@@ -5,6 +5,8 @@ import lombok.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 
 @Getter
 @Setter
@@ -23,6 +25,9 @@ public class DocumentDetailResponseDto {
     private String summary;
     private String extractedText;
     private DocumentAnalysisResponseDto analysis;
+
+    @Builder.Default
+    private Map<String, QuickActionDtos.QuickActionResponseDto> quickActions = new HashMap<>();
 
     @Builder.Default
     private List<DocumentNoteDto> notes = new ArrayList<>();

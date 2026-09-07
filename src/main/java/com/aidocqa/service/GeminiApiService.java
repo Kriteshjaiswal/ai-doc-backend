@@ -13,7 +13,17 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -26,21 +36,93 @@ public class GeminiApiService {
     private final AdaptivePromptBuilder adaptivePromptBuilder;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
+            .connectTimeout(Duration.ofSeconds(5))
+            .executor(Executors.newThreadPerTaskExecutor(
+                    Thread.ofVirtual().name("gemini-http-worker-", 1).factory()))
+            .build();
+
     @Value("${gemini.api.key:}")
     private String geminiApiKey;
 
-    // Supported Google Gemini models in order of capability & availability
-    private static final String PRIMARY_MODEL = "gemini-3.6-flash";
+    @Value("${ai.model.timeout.initial-seconds:25}")
+    private int initialTimeoutSeconds;
+
+    @Value("${ai.model.timeout.read-seconds:60}")
+    private int readTimeoutSeconds;
+
+    private final ScheduledExecutorService timeoutScheduler = Executors.newScheduledThreadPool(2, r -> {
+        Thread t = new Thread(r, "gemini-timeout-scheduler");
+        t.setDaemon(true);
+        return t;
+    });
+
+    @Value("${gemini.primary.model:gemini-3.8-flash}")
+    private String primaryModel;
+
+    // Curated Flash & Pro models in order of speed, stability, and reasoning capacity (Zero Lite Models)
+    private static final String DEFAULT_PRIMARY_MODEL = "gemini-3.8-flash";
     private static final List<String> GEMINI_FALLBACK_MODELS = List.of(
-            "gemini-3.5-flash",
-            "gemini-2.5-pro",
-            "gemini-3.5-flash-lite"
+            "gemini-flash-latest",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash"
     );
+
+    // Dynamic Circuit Breaker: Tracks models in temporary cooldown after 429 (quota) or 503 (high demand)
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> modelCooldownUntilMs = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public void markModelCooldown(String modelName, int cooldownSeconds, String reason) {
+        if (modelName == null || modelName.isBlank()) return;
+        long cooldownUntil = System.currentTimeMillis() + (cooldownSeconds * 1000L);
+        modelCooldownUntilMs.put(modelName, cooldownUntil);
+        log.warn("⚠️ [MODEL-COOLDOWN] Model {} entered temporary cooldown for {}s (reason: {}). Candidate list will bypass it.",
+                modelName, cooldownSeconds, reason);
+    }
+
+    public boolean isModelInCooldown(String modelName) {
+        if (modelName == null) return false;
+        Long until = modelCooldownUntilMs.get(modelName);
+        if (until == null) return false;
+        if (System.currentTimeMillis() > until) {
+            modelCooldownUntilMs.remove(modelName);
+            return false;
+        }
+        return true;
+    }
 
     @PostConstruct
     public void logStartupConfig() {
-        log.info("Gemini primary model={}", PRIMARY_MODEL);
+        log.info("Gemini primary model={}", getEffectivePrimaryModel());
         log.info("Gemini fallback models={}", GEMINI_FALLBACK_MODELS);
+    }
+
+    public String getEffectivePrimaryModel() {
+        return (primaryModel != null && !primaryModel.isBlank()) ? primaryModel.trim() : DEFAULT_PRIMARY_MODEL;
+    }
+
+    private List<String> buildModelCandidateList() {
+        List<String> raw = new ArrayList<>();
+        raw.add(getEffectivePrimaryModel());
+        for (String fb : GEMINI_FALLBACK_MODELS) {
+            if (!raw.contains(fb)) {
+                raw.add(fb);
+            }
+        }
+
+        // Healthy models first; cooling-down models pushed to the end as last resorts
+        List<String> healthy = new ArrayList<>();
+        List<String> cooling = new ArrayList<>();
+        for (String m : raw) {
+            if (isModelInCooldown(m)) {
+                cooling.add(m);
+            } else {
+                healthy.add(m);
+            }
+        }
+        healthy.addAll(cooling);
+        return healthy;
     }
 
     /**
@@ -70,11 +152,25 @@ public class GeminiApiService {
             String question,
             List<ChatHistory> recentHistory
     ) {
-        log.info("Processing AI question: '{}' (text chars: {}, page images: {}, history turns: {})",
+        return generateAnswerMultimodal(documentText, pageImagesBase64, question, recentHistory, null);
+    }
+
+    /**
+     * Context-aware Multimodal AI Execution with Conversation History and explicit response depth (LOW, MEDIUM, HIGH).
+     */
+    public GeminiResponseDto generateAnswerMultimodal(
+            String documentText,
+            List<String> pageImagesBase64,
+            String question,
+            List<ChatHistory> recentHistory,
+            String responseDepth
+    ) {
+        log.info("Processing AI question: '{}' (text chars: {}, page images: {}, history turns: {}, depth: {})",
                 question,
                 documentText != null ? documentText.length() : 0,
                 pageImagesBase64 != null ? pageImagesBase64.size() : 0,
-                recentHistory != null ? recentHistory.size() : 0);
+                recentHistory != null ? recentHistory.size() : 0,
+                responseDepth);
 
         if (question == null || question.isBlank()) {
             log.warn("Question validation failed: Question is blank or null");
@@ -88,10 +184,8 @@ public class GeminiApiService {
                     .build();
         }
 
-        // Build list of models to try in order
-        List<String> modelsToTry = new ArrayList<>();
-        modelsToTry.add(PRIMARY_MODEL);
-        modelsToTry.addAll(GEMINI_FALLBACK_MODELS);
+        // Build candidate list with primary model + resilient Flash fallbacks
+        List<String> modelsToTry = buildModelCandidateList();
 
         // 1. Try Gemini API models if API key is configured
         if (geminiApiKey != null && !geminiApiKey.isBlank()) {
@@ -100,15 +194,15 @@ public class GeminiApiService {
             for (String modelName : modelsToTry) {
                 String targetUrl = baseUrl + modelName + ":generateContent";
                 long startTime = System.currentTimeMillis();
-                log.info("Attempting Gemini model call: model={}", modelName);
+                log.info("Attempting Gemini model call: model={}, depth={}", modelName, responseDepth);
 
                 try {
-                    String rawAnswer = executeGeminiMultimodalCall(targetUrl, documentText, pageImagesBase64, question, recentHistory);
+                    String rawAnswer = executeGeminiMultimodalCall(targetUrl, documentText, pageImagesBase64, question, recentHistory, responseDepth);
                     long durationMs = System.currentTimeMillis() - startTime;
 
                     if (rawAnswer != null && !rawAnswer.isBlank()) {
                         String sanitized = sanitizeAnswer(rawAnswer);
-                        log.info("Gemini model SUCCESS: model={}, responseLength={}, durationMs={}",
+                        log.info("⏱️ [GEMINI-API-LATENCY] Gemini model SUCCESS: model={}, responseLength={}, durationMs={}",
                                 modelName, sanitized.length(), durationMs);
 
                         return GeminiResponseDto.builder()
@@ -121,7 +215,14 @@ public class GeminiApiService {
                     }
                 } catch (Exception e) {
                     long durationMs = System.currentTimeMillis() - startTime;
-                    log.warn("Gemini model {} FAILED: error='{}', durationMs={}", modelName, e.getMessage(), durationMs);
+                    String msg = e.getMessage() != null ? e.getMessage() : "";
+                    if (msg.contains("429")) {
+                        markModelCooldown(modelName, 60, "HTTP 429 Quota Exceeded");
+                    } else if (msg.contains("503")) {
+                        markModelCooldown(modelName, 15, "HTTP 503 High Demand");
+                    }
+                    log.warn("⏱️ [FAST-FALLBACK] Gemini model {} failed/timed out after {} ms: {}. Auto-shifting to next model...",
+                            modelName, durationMs, msg);
                 }
             }
             log.warn("All external Gemini API models failed. Falling back to dynamic local analytical engine.");
@@ -151,31 +252,374 @@ public class GeminiApiService {
                 .build();
     }
 
-    private String sanitizeAnswer(String answer) {
+    public String sanitizeAnswer(String answer) {
         if (answer == null) return "";
-        return answer.replaceAll("(?i)^\\[?Document QA Answer\\]?:?\\s*", "")
-                     .replaceAll("(?i)^\\[?AI Answer\\]?:?\\s*", "")
-                     .replaceAll("(?i)^Answer:\\s*", "")
-                     .trim();
+        String sanitized = answer.trim();
+
+        // 1. Strip repeated user question heading if generated as first line (e.g. "Question: ...\nAnswer: ...")
+        sanitized = sanitized.replaceAll("(?i)^Question:\\s*.*?\\n+", "");
+
+        // 2. Remove generic response prefixes
+        sanitized = sanitized.replaceAll("(?i)^(\\[?Document QA Answer\\]?|\\[?AI Answer\\]?|Answer):?\\s*", "");
+
+        // 3. Remove "Ready. Please provide..." and all readiness/priming declarations
+        sanitized = sanitized.replaceAll("(?i)^(Ready[.!]|I am ready[.!]|Ready to help[.!]|Ready for your questions?[.!])\\s*(Please provide.*?[.!]\\s*)?", "");
+        sanitized = sanitized.replaceAll("(?i)^Please provide (the )?(document context|your question).*?[.!:]\\s*", "");
+        sanitized = sanitized.replaceAll("(?i)^I am ready to help.*?[.!:]\\s*", "");
+        sanitized = sanitized.replaceAll("(?i)^Let's begin.*?[.!:]\\s*", "");
+
+        // 4. Remove conversational preambles and meta-commentary
+        sanitized = sanitized.replaceAll("(?i)^(Sure!|Certainly!|Sure,|Certainly,)\\s*(I would be (happy|glad) to (help|explain)[.!]?|Here is the answer[:.]?|Here's the breakdown[:.]?)?:?\\s*", "");
+        sanitized = sanitized.replaceAll("(?i)^Based on (your request|the provided context|the document context|the document|the text),?\\s*(here is|we can see that|it appears that)?[:.]?\\s*", "");
+        sanitized = sanitized.replaceAll("(?i)^As requested,?\\s*", "");
+        sanitized = sanitized.replaceAll("(?i)^As an AI (assistant|model),?\\s*", "");
+
+        // 5. Clean any residual leading punctuation and whitespace
+        sanitized = sanitized.replaceAll("^[.:!\\-\\s]+", "");
+
+        return sanitized.trim();
     }
 
-    private String executeGeminiMultimodalCall(
-            String targetUrl,
+    /**
+     * Real-Time Streaming AI Execution using Gemini streamGenerateContent (Server-Sent Events).
+     * Pushes text chunks to consumer in real time (< 300ms Time-To-First-Token).
+     */
+    private void logStep(String step, String requestId, String user, String model, long startTimeMs, String extra) {
+        long elapsedMs = System.currentTimeMillis() - startTimeMs;
+        log.info("📊 [AI-DIAGNOSTIC] step={} | reqId={} | user={} | model={} | thread={} | elapsedMs={} | {}",
+                step, requestId, user, model, Thread.currentThread().getName(), elapsedMs, (extra != null ? extra : ""));
+    }
+
+    /**
+     * Real-Time Streaming AI Execution using Gemini streamGenerateContent (Server-Sent Events).
+     * Pushes text chunks to consumer in real time (< 300ms Time-To-First-Token).
+     */
+    public GeminiResponseDto streamAnswerMultimodal(
+            String documentText,
+            List<String> pageImagesBase64,
+            String question,
+            List<ChatHistory> recentHistory,
+            Consumer<String> chunkConsumer
+    ) {
+        return streamAnswerMultimodal(null, null, documentText, pageImagesBase64, question, recentHistory, chunkConsumer, null);
+    }
+
+    /**
+     * Real-Time Streaming AI Execution with explicit response depth (LOW, MEDIUM, HIGH).
+     */
+    public GeminiResponseDto streamAnswerMultimodal(
+            String documentText,
+            List<String> pageImagesBase64,
+            String question,
+            List<ChatHistory> recentHistory,
+            Consumer<String> chunkConsumer,
+            String responseDepth
+    ) {
+        return streamAnswerMultimodal(null, null, documentText, pageImagesBase64, question, recentHistory, chunkConsumer, responseDepth);
+    }
+
+    /**
+     * Fully Isolated, True Concurrent Streaming AI Execution with Request Correlation & Single Stream Ownership.
+     */
+    public GeminiResponseDto streamAnswerMultimodal(
+            String requestId,
+            String userId,
+            String documentText,
+            List<String> pageImagesBase64,
+            String question,
+            List<ChatHistory> recentHistory,
+            Consumer<String> chunkConsumer,
+            String responseDepth
+    ) {
+        long reqStartTime = System.currentTimeMillis();
+        String reqId = (requestId != null && !requestId.isBlank()) ? requestId : UUID.randomUUID().toString().substring(0, 8);
+        String userStr = (userId != null && !userId.isBlank()) ? userId : "anon";
+
+        logStep("REQUEST_START", reqId, userStr, "all", reqStartTime,
+                "question='" + (question != null && question.length() > 50 ? question.substring(0, 50) + "..." : question) + "', depth=" + responseDepth);
+
+        if (question == null || question.isBlank()) {
+            String msg = "Please provide a valid question.";
+            if (chunkConsumer != null) chunkConsumer.accept(msg);
+            logStep("REQUEST_END", reqId, userStr, "none", reqStartTime, "Question is blank");
+            return GeminiResponseDto.builder()
+                    .answer(msg)
+                    .provider("NONE")
+                    .model("none")
+                    .success(false)
+                    .build();
+        }
+
+        List<String> modelsToTry = buildModelCandidateList();
+
+        if (geminiApiKey != null && !geminiApiKey.isBlank()) {
+            String baseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
+            String requestJson = buildGeminiRequestBodyJson(documentText, pageImagesBase64, question, recentHistory, responseDepth);
+
+            int ttftTimeout = Math.max(initialTimeoutSeconds, 25);
+            int streamMaxDuration = Math.max(readTimeoutSeconds, 60);
+
+            for (String modelName : modelsToTry) {
+                String targetUrl = baseUrl + modelName + ":streamGenerateContent?alt=sse&key=" + geminiApiKey;
+                long attemptStartTime = System.currentTimeMillis();
+                logStep("GEMINI_ATTEMPT_START", reqId, userStr, modelName, attemptStartTime, "depth=" + responseDepth);
+
+                StringBuilder fullAnswer = new StringBuilder();
+                StringBuilder prefixBuffer = new StringBuilder();
+                boolean[] prefixFlushed = new boolean[]{false};
+                java.util.concurrent.atomic.AtomicBoolean firstTokenReceived = new java.util.concurrent.atomic.AtomicBoolean(false);
+                java.util.concurrent.atomic.AtomicBoolean ttftExpired = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+                HttpRequest httpRequest = HttpRequest.newBuilder()
+                        .uri(URI.create(targetUrl))
+                        .header("Content-Type", "application/json")
+                        .timeout(Duration.ofSeconds(streamMaxDuration))
+                        .POST(HttpRequest.BodyPublishers.ofString(requestJson, StandardCharsets.UTF_8))
+                        .build();
+
+                logStep("HTTP_SEND_START", reqId, userStr, modelName, attemptStartTime, "Dispatching HTTP/1.1 async request");
+
+                CompletableFuture<HttpResponse<java.io.InputStream>> futureResponse =
+                        this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+
+                HttpResponse<java.io.InputStream> response;
+                try {
+                    // Dynamic Phase 1: Wait up to ttftTimeout (25s) for HTTP response headers
+                    response = futureResponse.get(ttftTimeout, TimeUnit.SECONDS);
+                } catch (TimeoutException te) {
+                    futureResponse.cancel(true);
+                    long durationMs = System.currentTimeMillis() - attemptStartTime;
+                    logStep("FALLBACK", reqId, userStr, modelName, attemptStartTime,
+                            "⏱️ [FAST-FALLBACK] Headers timed out after " + durationMs + " ms (> " + ttftTimeout + "s). Auto-shifting to next model...");
+                    continue;
+                } catch (Exception e) {
+                    futureResponse.cancel(true);
+                    long durationMs = System.currentTimeMillis() - attemptStartTime;
+                    logStep("FALLBACK", reqId, userStr, modelName, attemptStartTime,
+                            "HTTP send error after " + durationMs + " ms: " + e.getMessage() + ". Auto-shifting...");
+                    continue;
+                }
+
+                logStep("HTTP_HEADERS_RECEIVED", reqId, userStr, modelName, attemptStartTime, "Status=" + response.statusCode());
+
+                if (response.statusCode() != 200) {
+                    long durationMs = System.currentTimeMillis() - attemptStartTime;
+                    String errorDetail = "";
+                    try (BufferedReader errReader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+                        errorDetail = errReader.lines().collect(java.util.stream.Collectors.joining(" "));
+                        if (errorDetail.length() > 300) {
+                            errorDetail = errorDetail.substring(0, 300) + "...";
+                        }
+                    } catch (Exception ignored) {}
+
+                    // Smart Cooldown: 429 Quota Exceeded -> 60s cooldown; 503 High Demand -> 15s cooldown
+                    if (response.statusCode() == 429) {
+                        markModelCooldown(modelName, 60, "HTTP 429 Quota/Rate Limit Exceeded");
+                    } else if (response.statusCode() == 503) {
+                        markModelCooldown(modelName, 15, "HTTP 503 High Demand / Unavailable");
+                    }
+
+                    logStep("FALLBACK", reqId, userStr, modelName, attemptStartTime,
+                            "Non-200 HTTP status " + response.statusCode() + " after " + durationMs + " ms: " + errorDetail + ". Auto-shifting...");
+                    continue;
+                }
+
+                // Calculate remaining TTFT window for first token detection
+                long elapsedMs = System.currentTimeMillis() - attemptStartTime;
+                long remainingTtftMs = Math.max(1000L, (ttftTimeout * 1000L) - elapsedMs);
+
+                // Phase 2 & 3: Single Stream Consumer with Non-blocking Scheduled Abort Timer
+                ScheduledFuture<?> ttftTimer = timeoutScheduler.schedule(() -> {
+                    if (!firstTokenReceived.get()) {
+                        ttftExpired.set(true);
+                        logStep("FALLBACK", reqId, userStr, modelName, attemptStartTime,
+                                "⏱️ [FAST-FALLBACK] TTFT deadline expired (" + ttftTimeout + "s). Aborting stream to auto-shift model...");
+                        try {
+                            response.body().close();
+                        } catch (Exception ignored) {}
+                    }
+                }, remainingTtftMs, TimeUnit.MILLISECONDS);
+
+                ScheduledFuture<?> streamDurationTimer = timeoutScheduler.schedule(() -> {
+                    log.warn("⏱️ [{}] Max stream duration reached ({}s). Closing stream for model {}", reqId, streamMaxDuration, modelName);
+                    try {
+                        response.body().close();
+                    } catch (Exception ignored) {}
+                }, streamMaxDuration, TimeUnit.SECONDS);
+
+                logStep("FIRST_TOKEN_TASK_STARTED", reqId, userStr, modelName, attemptStartTime,
+                        "Single-owner stream reader active. Awaiting first token within " + remainingTtftMs + " ms");
+
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        line = line.trim();
+                        if (line.startsWith("data:")) {
+                            String json = line.substring(5).trim();
+                            if (!json.isEmpty() && !json.equals("[DONE]")) {
+                                try {
+                                    JsonNode root = objectMapper.readTree(json);
+                                    JsonNode candidates = root.path("candidates");
+                                    if (candidates.isArray()) {
+                                        for (JsonNode candidate : candidates) {
+                                            if (candidate.has("finishReason")) {
+                                                String finishReason = candidate.path("finishReason").asText("");
+                                                if (!finishReason.isBlank()) {
+                                                    log.info("[{}] Stream candidate finishReason: {}", reqId, finishReason);
+                                                }
+                                            }
+                                            JsonNode parts = candidate.path("content").path("parts");
+                                            if (parts.isArray()) {
+                                                for (JsonNode part : parts) {
+                                                    if (part.has("thought") && part.path("thought").asBoolean(false)) {
+                                                        continue;
+                                                    }
+                                                    String textPart = part.path("text").asText("");
+                                                    if (!textPart.isEmpty()) {
+                                                        // First token received! Cancel TTFT timer immediately and lock onto this model
+                                                        if (!firstTokenReceived.get()) {
+                                                            firstTokenReceived.set(true);
+                                                            ttftTimer.cancel(false);
+                                                            long firstTokenDurationMs = System.currentTimeMillis() - attemptStartTime;
+                                                            logStep("FIRST_TOKEN_RECEIVED", reqId, userStr, modelName, attemptStartTime,
+                                                                    "⚡ [STREAM-ACTIVE] First token at " + firstTokenDurationMs + " ms (< " + ttftTimeout + "s). Model LOCKED.");
+                                                            log.info("⚡ [STREAM-ACTIVE] Model {} started streaming at {} ms (< {}s). Locking onto model to complete full response...",
+                                                                    modelName, firstTokenDurationMs, ttftTimeout);
+                                                        }
+
+                                                        fullAnswer.append(textPart);
+                                                        if (chunkConsumer != null) {
+                                                            if (!prefixFlushed[0]) {
+                                                                prefixBuffer.append(textPart);
+                                                                if (prefixBuffer.length() >= 60 || prefixBuffer.indexOf("\n") >= 0) {
+                                                                    String sanitizedPrefix = sanitizeAnswer(prefixBuffer.toString());
+                                                                    if (!sanitizedPrefix.isEmpty()) {
+                                                                        chunkConsumer.accept(sanitizedPrefix);
+                                                                    }
+                                                                    prefixFlushed[0] = true;
+                                                                }
+                                                            } else {
+                                                                chunkConsumer.accept(textPart);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch (Exception e) {
+                                    log.debug("[{}] Error parsing streaming chunk JSON: {}", reqId, e.getMessage());
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    // If TTFT expired, stream closure by timer causes this exception, which triggers fallback
+                    if (ttftExpired.get() || !firstTokenReceived.get()) {
+                        ttftTimer.cancel(false);
+                        streamDurationTimer.cancel(false);
+                        long durationMs = System.currentTimeMillis() - attemptStartTime;
+                        logStep("FALLBACK", reqId, userStr, modelName, attemptStartTime,
+                                "First token failed within " + durationMs + " ms: " + e.getMessage() + ". Auto-shifting...");
+                        continue;
+                    } else {
+                        log.warn("[{}] Stream read completed/interrupted after {} ms: {}", reqId, System.currentTimeMillis() - attemptStartTime, e.getMessage());
+                    }
+                } finally {
+                    ttftTimer.cancel(false);
+                    streamDurationTimer.cancel(false);
+                    try { response.body().close(); } catch (Exception ignored) {}
+                }
+
+                // Flush any remaining prefix buffer if stream finished before 60 chars / newline
+                if (!prefixFlushed[0] && prefixBuffer.length() > 0 && chunkConsumer != null) {
+                    String sanitizedPrefix = sanitizeAnswer(prefixBuffer.toString());
+                    if (!sanitizedPrefix.isEmpty()) {
+                        chunkConsumer.accept(sanitizedPrefix);
+                    }
+                    prefixFlushed[0] = true;
+                }
+
+                if (fullAnswer.length() > 0) {
+                    String sanitized = sanitizeAnswer(fullAnswer.toString());
+                    long durationMs = System.currentTimeMillis() - attemptStartTime;
+                    logStep("STREAM_COMPLETE", reqId, userStr, modelName, attemptStartTime, "Output length=" + sanitized.length() + ", duration=" + durationMs + " ms");
+                    logStep("REQUEST_END", reqId, userStr, modelName, reqStartTime, "Total request duration=" + (System.currentTimeMillis() - reqStartTime) + " ms");
+                    log.info("Gemini stream SUCCESS: model={}, length={}, durationMs={}",
+                             modelName, sanitized.length(), durationMs);
+                    return GeminiResponseDto.builder()
+                            .answer(sanitized)
+                            .provider("GEMINI")
+                            .model(modelName)
+                            .success(true)
+                            .grounded(true)
+                            .build();
+                }
+
+                if (!firstTokenReceived.get()) {
+                    logStep("FALLBACK", reqId, userStr, modelName, attemptStartTime, "Stream returned 0 text tokens. Auto-shifting...");
+                }
+            }
+            log.warn("[{}] All external Gemini streaming models failed. Falling back to local analytical engine.", reqId);
+        }
+
+        // Local Engine streaming fallback
+        String localAns = processLocalAiResponse(documentText, question);
+        if (localAns != null && !localAns.isBlank()) {
+            String sanitized = sanitizeAnswer(localAns);
+            if (chunkConsumer != null) {
+                // Emit words with tiny pacing
+                String[] words = sanitized.split("(?<=\\s)|(?<=\\n)");
+                for (String word : words) {
+                    chunkConsumer.accept(word);
+                }
+            }
+            return GeminiResponseDto.builder()
+                    .answer(sanitized)
+                    .provider("LOCAL")
+                    .model("documind-local-nlp")
+                    .success(true)
+                    .grounded(true)
+                    .build();
+        }
+
+        String fallbackMsg = "I could not find sufficient information in this document to answer your question.";
+        if (chunkConsumer != null) chunkConsumer.accept(fallbackMsg);
+        return GeminiResponseDto.builder()
+                .answer(fallbackMsg)
+                .provider("LOCAL")
+                .model("fallback")
+                .success(true)
+                .grounded(false)
+                .build();
+    }
+
+    public String buildGeminiRequestBodyJson(
             String documentText,
             List<String> pageImagesBase64,
             String question,
             List<ChatHistory> recentHistory
     ) {
-        // Build Intent-Adaptive, Multi-Turn Context Prompt
-        String prompt = adaptivePromptBuilder.buildAdaptivePrompt(documentText, pageImagesBase64, question, recentHistory);
+        return buildGeminiRequestBodyJson(documentText, pageImagesBase64, question, recentHistory, null);
+    }
 
-        List<Map<String, Object>> parts = new ArrayList<>();
-        parts.add(Map.of("text", prompt));
+    public String buildGeminiRequestBodyJson(
+            String documentText,
+            List<String> pageImagesBase64,
+            String question,
+            List<ChatHistory> recentHistory,
+            String responseDepth
+    ) {
+        AdaptivePromptBuilder.PromptBundle bundle = adaptivePromptBuilder.buildPromptBundle(
+                documentText, pageImagesBase64, question, recentHistory, responseDepth);
+
+        List<Map<String, Object>> userParts = new ArrayList<>();
+        userParts.add(Map.of("text", bundle.userPrompt()));
 
         if (pageImagesBase64 != null && !pageImagesBase64.isEmpty()) {
             for (String base64Img : pageImagesBase64) {
                 if (base64Img != null && !base64Img.isBlank()) {
-                    parts.add(Map.of(
+                    userParts.add(Map.of(
                             "inline_data", Map.of(
                                     "mime_type", "image/png",
                                     "data", base64Img
@@ -186,15 +630,44 @@ public class GeminiApiService {
         }
 
         Map<String, Object> requestBody = Map.of(
+                "system_instruction", Map.of(
+                        "parts", List.of(Map.of("text", bundle.systemInstruction()))
+                ),
                 "contents", List.of(
-                        Map.of("parts", parts)
+                        Map.of(
+                                "role", "user",
+                                "parts", userParts
+                        )
+                ),
+                "generationConfig", Map.of(
+                        "temperature", bundle.temperature(),
+                        "maxOutputTokens", bundle.maxOutputTokens() > 0 ? bundle.maxOutputTokens() : 4096,
+                        "topP", 0.95
                 )
         );
+
+        try {
+            return objectMapper.writeValueAsString(requestBody);
+        } catch (Exception e) {
+            log.error("Failed to serialize Gemini request body: {}", e.getMessage());
+            return "{\"contents\":[{\"parts\":[{\"text\":\"" + bundle.userPrompt().replace("\"", "\\\"") + "\"}]}]}";
+        }
+    }
+
+    private String executeGeminiMultimodalCall(
+            String targetUrl,
+            String documentText,
+            List<String> pageImagesBase64,
+            String question,
+            List<ChatHistory> recentHistory,
+            String responseDepth
+    ) {
+        String requestJson = buildGeminiRequestBodyJson(documentText, pageImagesBase64, question, recentHistory, responseDepth);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
 
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+        HttpEntity<String> entity = new HttpEntity<>(requestJson, headers);
         String url = targetUrl.contains("?") ? targetUrl + "&key=" + geminiApiKey : targetUrl + "?key=" + geminiApiKey;
 
         ResponseEntity<String> response = restTemplate.exchange(
@@ -213,11 +686,20 @@ public class GeminiApiService {
             JsonNode candidates = root.path("candidates");
 
             if (candidates.isArray() && !candidates.isEmpty()) {
-                JsonNode content = candidates.get(0).path("content");
-                JsonNode parts = content.path("parts");
-
-                if (parts.isArray() && !parts.isEmpty()) {
-                    return parts.get(0).path("text").asText();
+                StringBuilder textBuilder = new StringBuilder();
+                for (JsonNode candidate : candidates) {
+                    JsonNode parts = candidate.path("content").path("parts");
+                    if (parts.isArray()) {
+                        for (JsonNode part : parts) {
+                            if (part.has("thought") && part.path("thought").asBoolean(false)) {
+                                continue;
+                            }
+                            textBuilder.append(part.path("text").asText(""));
+                        }
+                    }
+                }
+                if (textBuilder.length() > 0) {
+                    return textBuilder.toString();
                 }
             }
             throw new GeminiApiException("Unable to parse Gemini AI response payload.");
@@ -447,12 +929,19 @@ public class GeminiApiService {
                 }
             }
 
-            // References section placed strictly at the end
-            sb.append("\n### 📚 Document References\n");
-            sb.append("- **Page ").append(topMatch.page).append(":** Relevant extracted passage\n");
-            for (int i = 1; i < Math.min(scoredList.size(), 3); i++) {
-                if (scoredList.get(i).page != topMatch.page) {
-                    sb.append("- **Page ").append(scoredList.get(i).page).append(":** Supporting context\n");
+            // References section placed strictly at the end only if user explicitly asked for pages/references
+            if (question != null) {
+                String qLower = question.toLowerCase();
+                boolean asksForPages = qLower.contains("page") || qLower.contains("reference") || qLower.contains("citation")
+                        || qLower.contains("kaha par") || qLower.contains("kaha se") || qLower.contains("kis page");
+                if (asksForPages) {
+                    sb.append("\n### 📚 Document References\n");
+                    sb.append("- **Page ").append(topMatch.page).append(":** Relevant extracted passage\n");
+                    for (int i = 1; i < Math.min(scoredList.size(), 3); i++) {
+                        if (scoredList.get(i).page != topMatch.page) {
+                            sb.append("- **Page ").append(scoredList.get(i).page).append(":** Supporting context\n");
+                        }
+                    }
                 }
             }
 

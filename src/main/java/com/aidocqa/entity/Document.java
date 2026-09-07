@@ -6,7 +6,10 @@ import lombok.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "documents")
+@Table(name = "documents", indexes = {
+    @Index(name = "idx_doc_user_uploaded", columnList = "user_id, uploaded_at DESC"),
+    @Index(name = "idx_doc_user_status", columnList = "user_id, analysis_status")
+})
 @Getter
 @Setter
 @NoArgsConstructor
@@ -27,8 +30,7 @@ public class Document {
     @Column(name = "file_path", nullable = false)
     private String filePath;
 
-    @Lob
-    @Column(name = "extracted_text", columnDefinition = "LONGTEXT")
+    @Column(name = "extracted_text", columnDefinition = "TEXT")
     private String extractedText;
 
     @Column(name = "page_count")
@@ -43,21 +45,20 @@ public class Document {
     @Builder.Default
     private String analysisStatus = "UPLOADED";
 
-    @Lob
-    @Column(name = "summary", columnDefinition = "LONGTEXT")
+    @Column(name = "summary", columnDefinition = "TEXT")
     private String summary;
 
-    @Lob
-    @Column(name = "analysis_json", columnDefinition = "LONGTEXT")
+    @Column(name = "analysis_json", columnDefinition = "TEXT")
     private String analysisJson;
 
-    @Lob
-    @Column(name = "notes_json", columnDefinition = "LONGTEXT")
+    @Column(name = "notes_json", columnDefinition = "TEXT")
     private String notesJson;
 
-    @Lob
-    @Column(name = "bookmarks_json", columnDefinition = "LONGTEXT")
+    @Column(name = "bookmarks_json", columnDefinition = "TEXT")
     private String bookmarksJson;
+
+    @Column(name = "quick_actions_json", columnDefinition = "TEXT")
+    private String quickActionsJson;
 
     @Column(name = "user_id", nullable = false)
     private Long userId;

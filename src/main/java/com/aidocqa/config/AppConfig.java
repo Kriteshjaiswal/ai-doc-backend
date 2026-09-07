@@ -19,9 +19,21 @@ public class AppConfig {
     @Value("${file.upload-dir}")
     private String uploadDir;
 
+    @Value("${ai.model.timeout.connect-seconds:5}")
+    private int connectTimeoutSeconds;
+
+    @Value("${ai.model.timeout.read-seconds:60}")
+    private int readTimeoutSeconds;
+
     @Bean
     public RestTemplate restTemplate() {
-        return new RestTemplate();
+        org.springframework.http.client.SimpleClientHttpRequestFactory factory =
+                new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout((int) java.time.Duration.ofSeconds(connectTimeoutSeconds).toMillis());
+        factory.setReadTimeout((int) java.time.Duration.ofSeconds(readTimeoutSeconds).toMillis());
+        log.info("Initialized RestTemplate with fast AI fallback: connectTimeout={}s, readTimeout={}s",
+                connectTimeoutSeconds, readTimeoutSeconds);
+        return new RestTemplate(factory);
     }
 
     @PostConstruct

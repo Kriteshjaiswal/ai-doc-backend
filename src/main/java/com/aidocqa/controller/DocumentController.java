@@ -102,6 +102,13 @@ public class DocumentController {
                 .ok(ApiResponseDto.success("Quick action executed successfully", response));
     }
 
+    @PostMapping("/quick-action/clear-cache")
+    @Operation(summary = "Clear quick action cache", description = "Clears session quick action cache on logout or new session")
+    public ResponseEntity<ApiResponseDto<String>> clearQuickActionCache() {
+        documentService.clearQuickActionCache();
+        return ResponseEntity.ok(ApiResponseDto.success("Quick action session cache cleared successfully.", "CLEARED"));
+    }
+
     @GetMapping("/{id}/file")
     @Operation(summary = "Get PDF file stream", description = "Stream the raw PDF file for inline preview or download")
     public ResponseEntity<byte[]> getPdfFile(

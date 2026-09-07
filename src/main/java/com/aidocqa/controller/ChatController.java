@@ -35,17 +35,31 @@ public class ChatController {
         String userEmail = user != null ? user.getEmail() : "anonymous";
         Long userId = user != null ? user.getId() : null;
 
-        log.info("\n======================================================\n" +
-                 "🚀 [AI-CHAT-CONTROLLER] Incoming Question Request\n" +
-                 "👉 Question: \"{}\"\n" +
-                 "📄 Document ID: {}\n" +
-                 "👤 User: {} (ID: {})\n" +
-                 "======================================================",
-                request.getQuestion(), request.getDocumentId(), userEmail, userId);
+        log.info("🚀 [AI-CHAT] Incoming Sync Question: \"{}\" | docId: {} | user: {}",
+                request.getQuestion(), request.getDocumentId(), userEmail);
 
         ChatResponseDto response = chatService.askQuestion(request, user);
         return ResponseEntity
                 .ok(ApiResponseDto.success("Question answered successfully", response));
+    }
+
+    @GetMapping(value = "/ask/stream", produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
+    @Operation(summary = "Ask question with real-time SSE token streaming", description = "Streams tokens progressively (< 300ms Time-To-First-Token)")
+    public org.springframework.web.servlet.mvc.method.annotation.SseEmitter askQuestionStream(
+            @RequestParam(required = false) Long documentId,
+            @RequestParam String question,
+            @RequestParam(required = false, defaultValue = "MEDIUM") String responseDepth,
+            @AuthenticationPrincipal UserPrincipal user) {
+
+        String userEmail = user != null ? user.getEmail() : "anonymous";
+        log.info("⚡ [AI-CHAT-STREAM] Incoming Stream Request: \"{}\" | docId: {} | depth: {} | user: {}",
+                question, documentId, responseDepth, userEmail);
+
+        org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter =
+                new org.springframework.web.servlet.mvc.method.annotation.SseEmitter(120_000L); // 2 minute timeout
+
+        chatService.askQuestionStream(documentId, question, responseDepth, user, emitter);
+        return emitter;
     }
 
     @GetMapping({ "/history", "/history/{documentId}" })

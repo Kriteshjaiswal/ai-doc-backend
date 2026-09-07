@@ -98,17 +98,32 @@ public class DocumentService {
             Document savedDocument = documentRepository.save(document);
             log.info("Document saved with ID: {} for user ID: {} with {} pages", savedDocument.getId(), user.getId(), pageCount);
 
-            // Run AI analysis
+            // Run AI analysis & auto-generate all Quick Actions
+            long uploadPipelineStart = System.currentTimeMillis();
             try {
                 DocumentAnalysisResponseDto analysis = documentAnalysisService.analyzeDocument(savedDocument, savedFile);
                 savedDocument.setSummary(analysis.getSummary());
                 savedDocument.setAnalysisJson(objectMapper.writeValueAsString(analysis));
+
+                // Auto-generate all 6 Quick Action sub-menus upon document addition
+                Map<String, QuickActionDtos.QuickActionResponseDto> quickActions =
+                        documentAnalysisService.pregenerateAllQuickActions(savedDocument, analysis, rawText, savedFile);
+                savedDocument.setQuickActionsJson(objectMapper.writeValueAsString(quickActions));
+
                 savedDocument.setAnalysisStatus("COMPLETED");
                 savedDocument = documentRepository.save(savedDocument);
-                log.info("AI Analysis completed and saved for document ID: {}", savedDocument.getId());
+
+                long pipelineDurationMs = System.currentTimeMillis() - uploadPipelineStart;
+                log.info("⏱️ [DOC-UPLOAD-PIPELINE] Complete upload & AI generation finished in {} ms for docId={}",
+                        pipelineDurationMs, savedDocument.getId());
             } catch (Exception e) {
                 log.warn("Initial AI analysis failed for document ID {}: {}", savedDocument.getId(), e.getMessage());
                 savedDocument.setAnalysisStatus("COMPLETED"); // Still mark ready with local fallback
+                try {
+                    Map<String, QuickActionDtos.QuickActionResponseDto> quickActions =
+                            documentAnalysisService.pregenerateAllQuickActions(savedDocument, null, rawText, savedFile);
+                    savedDocument.setQuickActionsJson(objectMapper.writeValueAsString(quickActions));
+                } catch (Exception ignored) {}
                 savedDocument = documentRepository.save(savedDocument);
             }
 
@@ -121,22 +136,33 @@ public class DocumentService {
     }
 
     /**
-     * Retrieves all uploaded documents for the authenticated user.
+     * Retrieves all uploaded documents for the authenticated user using lean projections.
+     * Avoids loading megabytes of extracted_text into JVM heap.
      */
     public List<DocumentResponseDto> getAllDocuments(UserPrincipal user) {
-        return documentRepository.findByUserId(user.getId()).stream()
-                .map(this::mapToDto)
+        return documentRepository.findSummaryByUserId(user.getId()).stream()
+                .map(p -> DocumentResponseDto.builder()
+                        .id(p.getId())
+                        .fileName(p.getFileName())
+                        .fileSize(p.getFileSize())
+                        .pageCount(p.getPageCount())
+                        .mimeType(p.getMimeType())
+                        .analysisStatus(p.getAnalysisStatus())
+                        .summary(p.getSummary())
+                        .uploadedAt(p.getUploadedAt())
+                        .build())
                 .collect(Collectors.toList());
     }
 
     /**
      * Retrieves detailed document information including AI analysis, notes, and bookmarks.
+     * Uses cached DB analysis without re-reading physical PDF on disk.
      */
     public DocumentDetailResponseDto getDocumentDetail(Long id, UserPrincipal user) {
         Document document = getDocumentById(id, user);
-        File pdfFile = new File(document.getFilePath());
+        int actualPageCount = document.getPageCount() != null ? document.getPageCount() : 1;
 
-        // Parse or run analysis if missing
+        // Parse saved analysis JSON directly from DB
         DocumentAnalysisResponseDto analysisDto = null;
         if (document.getAnalysisJson() != null && !document.getAnalysisJson().isBlank()) {
             try {
@@ -146,26 +172,10 @@ public class DocumentService {
             }
         }
 
-        int actualPageCount = document.getPageCount() != null ? document.getPageCount() : 1;
         if (analysisDto != null) {
-            boolean hasGenericSections = analysisDto.getSections() == null || analysisDto.getSections().isEmpty() ||
-                    analysisDto.getSections().stream().anyMatch(s -> s.getTitle() != null && s.getTitle().toLowerCase().contains("chapters & disclosures"));
-
-            if (hasGenericSections && pdfFile.exists()) {
-                int pagesToRead = Math.min(actualPageCount, actualPageCount <= 100 ? actualPageCount : 300);
-                Map<Integer, String> paginatedText = documentAnalysisService.extractPagesText(pdfFile, pagesToRead);
-                List<DocumentAnalysisResponseDto.SectionDto> realSections = documentAnalysisService.extractDocumentSectionsFromPdf(
-                        pdfFile, paginatedText, actualPageCount, analysisDto.getDocumentType(), document.getExtractedText());
-                if (realSections != null && !realSections.isEmpty()) {
-                    analysisDto.setSections(realSections);
-                    try {
-                        document.setAnalysisJson(objectMapper.writeValueAsString(analysisDto));
-                        documentRepository.save(document);
-                    } catch (Exception ignored) {}
-                }
-            }
             documentAnalysisService.sanitizeAndValidateAnalysis(analysisDto, actualPageCount);
         } else {
+            File pdfFile = new File(document.getFilePath());
             analysisDto = documentAnalysisService.analyzeDocument(document, pdfFile);
             try {
                 document.setAnalysisJson(objectMapper.writeValueAsString(analysisDto));
@@ -174,6 +184,35 @@ public class DocumentService {
                 documentRepository.save(document);
             } catch (Exception e) {
                 log.warn("Failed to persist updated analysis JSON: {}", e.getMessage());
+            }
+        }
+
+        // Parse or auto-generate Quick Actions (for instant access)
+        Map<String, QuickActionDtos.QuickActionResponseDto> quickActions = null;
+        if (document.getQuickActionsJson() != null && !document.getQuickActionsJson().isBlank()) {
+            try {
+                quickActions = objectMapper.readValue(
+                        document.getQuickActionsJson(),
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, QuickActionDtos.QuickActionResponseDto>>() {}
+                );
+            } catch (Exception e) {
+                log.warn("Could not parse saved quickActionsJson for doc {}: {}", id, e.getMessage());
+            }
+        }
+
+        // Auto-generate if missing for existing document
+        if (quickActions == null || quickActions.isEmpty()) {
+            long qaStart = System.currentTimeMillis();
+            File pdfFile = new File(document.getFilePath());
+            quickActions = documentAnalysisService.pregenerateAllQuickActions(
+                    document, analysisDto, document.getExtractedText(), pdfFile);
+            try {
+                document.setQuickActionsJson(objectMapper.writeValueAsString(quickActions));
+                documentRepository.save(document);
+                log.info("⏱️ [QUICK-ACTIONS-AUTO] Auto-generated & cached missing quick actions in {} ms for docId={}",
+                        (System.currentTimeMillis() - qaStart), id);
+            } catch (Exception e) {
+                log.warn("Could not persist generated quickActionsJson for doc {}: {}", id, e.getMessage());
             }
         }
 
@@ -194,6 +233,7 @@ public class DocumentService {
                 .summary(document.getSummary())
                 .extractedText(document.getExtractedText())
                 .analysis(analysisDto)
+                .quickActions(quickActions != null ? quickActions : new HashMap<>())
                 .notes(notes)
                 .bookmarks(bookmarks)
                 .build();
@@ -204,27 +244,11 @@ public class DocumentService {
      */
     public DocumentAnalysisResponseDto getDocumentAnalysis(Long id, UserPrincipal user) {
         Document document = getDocumentById(id, user);
-        File pdfFile = new File(document.getFilePath());
         int actualPageCount = document.getPageCount() != null ? document.getPageCount() : 1;
+
         if (document.getAnalysisJson() != null && !document.getAnalysisJson().isBlank()) {
             try {
                 DocumentAnalysisResponseDto analysisDto = objectMapper.readValue(document.getAnalysisJson(), DocumentAnalysisResponseDto.class);
-                boolean hasGenericSections = analysisDto.getSections() == null || analysisDto.getSections().isEmpty() ||
-                        analysisDto.getSections().stream().anyMatch(s -> s.getTitle() != null && s.getTitle().toLowerCase().contains("chapters & disclosures"));
-
-                if (hasGenericSections && pdfFile.exists()) {
-                    int pagesToRead = Math.min(actualPageCount, actualPageCount <= 100 ? actualPageCount : 300);
-                    Map<Integer, String> paginatedText = documentAnalysisService.extractPagesText(pdfFile, pagesToRead);
-                    List<DocumentAnalysisResponseDto.SectionDto> realSections = documentAnalysisService.extractDocumentSectionsFromPdf(
-                            pdfFile, paginatedText, actualPageCount, analysisDto.getDocumentType(), document.getExtractedText());
-                    if (realSections != null && !realSections.isEmpty()) {
-                        analysisDto.setSections(realSections);
-                        try {
-                            document.setAnalysisJson(objectMapper.writeValueAsString(analysisDto));
-                            documentRepository.save(document);
-                        } catch (Exception ignored) {}
-                    }
-                }
                 documentAnalysisService.sanitizeAndValidateAnalysis(analysisDto, actualPageCount);
                 return analysisDto;
             } catch (Exception e) {
@@ -232,6 +256,7 @@ public class DocumentService {
             }
         }
 
+        File pdfFile = new File(document.getFilePath());
         DocumentAnalysisResponseDto analysis = documentAnalysisService.analyzeDocument(document, pdfFile);
         try {
             document.setAnalysisJson(objectMapper.writeValueAsString(analysis));
@@ -256,8 +281,14 @@ public class DocumentService {
         try {
             document.setAnalysisJson(objectMapper.writeValueAsString(analysis));
             document.setSummary(analysis.getSummary());
+
+            Map<String, QuickActionDtos.QuickActionResponseDto> quickActions =
+                    documentAnalysisService.pregenerateAllQuickActions(document, analysis, document.getExtractedText(), pdfFile);
+            document.setQuickActionsJson(objectMapper.writeValueAsString(quickActions));
+
             document.setAnalysisStatus("COMPLETED");
             documentRepository.save(document);
+            log.info("AI Re-Analysis & Quick Actions regenerated for docId={}", id);
         } catch (Exception e) {
             log.error("Failed to save re-analysis: {}", e.getMessage());
         }
@@ -291,6 +322,10 @@ public class DocumentService {
         Document document = getDocumentById(id, user);
         File pdfFile = new File(document.getFilePath());
         return documentAnalysisService.executeQuickAction(document, request, pdfFile);
+    }
+
+    public void clearQuickActionCache() {
+        documentAnalysisService.clearQuickActionCache();
     }
 
     /**

@@ -6,7 +6,9 @@ import lombok.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "flashcards")
+@Table(name = "flashcards", indexes = {
+    @Index(name = "idx_fc_user_doc", columnList = "user_id, document_id")
+})
 @Getter
 @Setter
 @NoArgsConstructor

@@ -68,7 +68,6 @@ public class PdfExtractorService {
             if (offset > 0) {
                 sb.append("=== DOCUMENT PAGE MAPPING (FRONT MATTER OFFSET = ").append(offset).append(" PAGES) ===\n");
                 sb.append("NOTE: Book Page 1 corresponds to physical PDF Document Page ").append(offset + 1).append(".\n");
-                sb.append("ALWAYS cite using the PDF Document Page number (e.g. [Page ").append(offset + 87).append("] for Book Page 87) for viewer navigation.\n");
                 sb.append("=========================================================================\n\n");
             }
 
@@ -119,7 +118,6 @@ public class PdfExtractorService {
             if (offset > 0) {
                 contextBuilder.append("=== DOCUMENT PAGE MAPPING (FRONT MATTER OFFSET = ").append(offset).append(" PAGES) ===\n");
                 contextBuilder.append("NOTE: Book Page 1 corresponds to physical PDF Document Page ").append(offset + 1).append(".\n");
-                contextBuilder.append("ALWAYS cite using the PDF Document Page number (e.g. [Page ").append(offset + 87).append("] for Book Page 87) for viewer navigation.\n");
                 contextBuilder.append("=========================================================================\n\n");
             }
 
